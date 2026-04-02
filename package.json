@@ -1,0 +1,14 @@
+{
+  "name": "agentic-virtual-classroom",
+  "version": "1.0.0",
+  "description": "Root package for running all microservices concurrently",
+  "scripts": {
+    "start": "concurrently \"npm run start-frontend\" \"npm run start-backend\" \"npm run start-ai\"",
+    "start-frontend": "cd frontend && npm run dev",
+    "start-backend": "cd backend && node server.js",
+    "start-ai": "cd ai_service && .\\venv\\Scripts\\activate && uvicorn main:app --host 0.0.0.0 --port 8000"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

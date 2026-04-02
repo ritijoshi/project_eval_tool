@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+.venv/
+.venv-1/
+venv/
+__pycache__/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Large Files & AI Models
+ai_service/course_chunks/
+ai_service/course_faiss_indexes/
+ai_service/temp_course_upload_*
+ai_service/temp_eval_upload/
+*.safetensors
+*.pkl
+*.faiss
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
