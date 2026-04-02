@@ -5,7 +5,9 @@ const FormData = require('form-data');
 const Feedback = require('../models/Feedback');
 const User = require('../models/User');
 const { getProfile, updateQuizScore, addInteraction, addWeakTopics } = require('../utils/studentProfileStore');
+const Proposal = require('../models/Proposal');
 const { getAiServiceUrl } = require('../config/services');
+const { resolveCourseCode } = require('../utils/courseContext');
 
 const AI_BASE = getAiServiceUrl();
 
@@ -83,9 +85,13 @@ const createFeedbackRecord = async ({ studentId, courseKey, evaluationData, subm
 const getLearningPath = async (req, res) => {
     try {
         const userId = req.user?._id || 'anonymous';
+        const courseId = req.query?.courseId;
+        const resolvedCourseKey = courseId ? await resolveCourseCode(courseId) : null;
         const profile = getProfile(userId);
         const studentStats = {
             student_id: userId,
+            course_id: courseId || null,
+            course_key: resolvedCourseKey || null,
             quiz_scores: profile.quiz_scores || {},
             weak_topics: profile.weak_topics || [],
             recent_interactions: profile.recent_interactions || []
@@ -191,14 +197,23 @@ const getLeaderboard = async (req, res) => {
 
 const submitProposal = async (req, res) => {
     try {
-        console.log('Project proposal submitted:', req.body);
-        // Simulate Agent evaluation
-        const evaluation = {
-            status: "Evaluated",
-            score: "85/100",
-            feedback: "Great proposal. Strong architecture, but the UI/UX criteria could be defined more clearly based on the rubric."
-        };
-        res.status(201).json({ message: 'Proposal submitted and evaluated by AI Agent successfully.', evaluation });
+        const studentId = req.user?._id || 'anonymous';
+        const { courseId, ...payload } = req.body || {};
+
+        if (studentId === 'anonymous') {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        const proposal = await Proposal.create({
+            student: studentId,
+            course: courseId || null,
+            payload,
+        });
+
+        res.status(201).json({
+            message: 'Proposal submitted successfully.',
+            proposalId: proposal._id,
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -206,8 +221,9 @@ const submitProposal = async (req, res) => {
 
 const evaluateProject = async (req, res) => {
     try {
-        const { submission_text, rubric, course_key } = req.body;
+        const { submission_text, rubric, course_key, course_id } = req.body;
         const userId = req.user?._id || 'anonymous';
+        const resolvedCourseKey = course_key || (course_id ? await resolveCourseCode(course_id) : null);
         addInteraction(userId, `Project evaluation submitted: ${String(submission_text || '').slice(0, 220)}`);
         
         try {
@@ -224,7 +240,7 @@ const evaluateProject = async (req, res) => {
 
             const feedbackDoc = await createFeedbackRecord({
                 studentId: userId,
-                courseKey: course_key,
+                courseKey: resolvedCourseKey,
                 evaluationData: response.data,
                 submissionText: submission_text,
                 rubric,
@@ -244,7 +260,7 @@ const evaluateProject = async (req, res) => {
 
 const evaluateProjectFiles = async (req, res) => {
     try {
-        const { rubric, course_key } = req.body || {};
+        const { rubric, course_key, course_id } = req.body || {};
         const files = req.files || [];
 
         if (!rubric || !String(rubric).trim()) {
@@ -255,6 +271,7 @@ const evaluateProjectFiles = async (req, res) => {
         }
 
         const userId = req.user?._id || 'anonymous';
+        const resolvedCourseKey = course_key || (course_id ? await resolveCourseCode(course_id) : null);
         addInteraction(userId, `Project evaluation submitted with ${files.length} file(s).`);
 
         const pythonServiceUrl = `${AI_BASE}/evaluate/files`;
@@ -282,7 +299,7 @@ const evaluateProjectFiles = async (req, res) => {
 
             const feedbackDoc = await createFeedbackRecord({
                 studentId: userId,
-                courseKey: course_key,
+                courseKey: resolvedCourseKey,
                 evaluationData: response.data,
                 submissionText: files.map((f) => f.originalname).join(', '),
                 rubric,

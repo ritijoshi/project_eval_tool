@@ -1,18 +1,25 @@
 const Feedback = require('../models/Feedback');
+const User = require('../models/User');
+const { resolveCourseCode } = require('../utils/courseContext');
 
 // ===== PROFESSOR OPERATIONS =====
 
 const getStudentEvaluations = async (req, res) => {
   try {
     const professorId = req.user?._id;
-    const { courseKey = 'All', status = 'all' } = req.query;
+    const { courseKey = 'All', status = 'all', courseId } = req.query;
 
     if (!professorId) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
     const query = { professor: professorId };
-    if (courseKey !== 'All') query.courseKey = courseKey;
+    if (courseId) {
+      const resolved = await resolveCourseCode(courseId);
+      if (resolved) query.courseKey = resolved;
+    } else if (courseKey !== 'All') {
+      query.courseKey = courseKey;
+    }
     if (status !== 'all') query.status = status;
 
     const evaluations = await Feedback.find(query)
@@ -107,14 +114,19 @@ const addProfessorFeedback = async (req, res) => {
 const getStudentFeedback = async (req, res) => {
   try {
     const studentId = req.user?._id;
-    const { courseKey = 'All' } = req.query;
+    const { courseKey = 'All', courseId } = req.query;
 
     if (!studentId) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
     const query = { student: studentId };
-    if (courseKey !== 'All') query.courseKey = courseKey;
+    if (courseId) {
+      const resolved = await resolveCourseCode(courseId);
+      if (resolved) query.courseKey = resolved;
+    } else if (courseKey !== 'All') {
+      query.courseKey = courseKey;
+    }
 
     const feedbacks = await Feedback.find(query)
       .populate('professor', 'name email')
@@ -225,10 +237,12 @@ const createFeedbackFromEvaluation = async (req, res) => {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
-    // Get professor for the course (assume first professor returned or from session)
-    // In production, this would look up the actual course instructor
-    const User = require('../models/User');
-    const professor = await User.findOne({ role: 'professor' }).limit(1);
+    const Course = require('../models/Course');
+    const course = await Course.findOne({ courseCode: courseKey });
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found for feedback' });
+    }
+    const professor = await User.findById(course.professor).select('_id');
 
     if (!professor) {
       return res.status(500).json({ message: 'No professor found for feedback' });

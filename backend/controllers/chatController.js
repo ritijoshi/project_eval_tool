@@ -3,13 +3,18 @@ const ChatHistory = require('../models/ChatHistory');
 const Notification = require('../models/Notification');
 const { addInteraction } = require('../utils/studentProfileStore');
 const { getAiServiceUrl } = require('../config/services');
+const { resolveCourseCode } = require('../utils/courseContext');
 
 const AI_BASE = getAiServiceUrl();
 
 const handleChat = async (req, res) => {
-    const { message, history, student_level, course_key } = req.body;
+    const { message, history, student_level, course_key, course_id } = req.body;
     const userId = req.user?._id || 'anonymous';
-    const normalizedCourseKey = String(course_key || 'general').trim().toLowerCase() || 'general';
+    let resolvedCourseKey = course_key;
+    if (!resolvedCourseKey && course_id) {
+        resolvedCourseKey = await resolveCourseCode(course_id);
+    }
+    const normalizedCourseKey = String(resolvedCourseKey || 'general').trim().toLowerCase() || 'general';
     const trimmedMessage = String(message || '').trim();
 
     if (!trimmedMessage) {
@@ -43,13 +48,13 @@ const handleChat = async (req, res) => {
     
     try {
         // Forward the chat query and memory context to the Python FastAPI Microservice
-        const pythonServiceUrl = course_key
+        const pythonServiceUrl = resolvedCourseKey
             ? `${AI_BASE}/course/chat`
             : `${AI_BASE}/chat`;
 
-        const payload = course_key
+        const payload = resolvedCourseKey
             ? {
-                course_key,
+                course_key: resolvedCourseKey,
                 message: trimmedMessage,
                 history: mergedHistory,
                 student_level: student_level || 'intermediate',

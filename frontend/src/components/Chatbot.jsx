@@ -1,18 +1,18 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Send, Bot, User, Sparkles, Trash2 } from 'lucide-react';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
+import { useActiveCourse } from '../context/ActiveCourseContext';
 
 const Chatbot = () => {
   const [studentLevel, setStudentLevel] = useState('beginner');
-  const [courses, setCourses] = useState([]);
-  const [selectedCourseKey, setSelectedCourseKey] = useState('');
-  const [coursesLoading, setCoursesLoading] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  const { activeCourseId, activeCourse } = useActiveCourse();
+  const activeCourseKey = useMemo(() => activeCourse?.courseCode || '', [activeCourse]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -23,39 +23,14 @@ const Chatbot = () => {
   }, [messages, loading]);
 
   useEffect(() => {
-    const fetchCourses = async () => {
-      if (coursesLoading) return;
-
-      try {
-        const token = localStorage.getItem('token');
-        const config = { headers: { Authorization: `Bearer ${token}` } };
-        setCoursesLoading(true);
-        const res = await axios.get(`${API_BASE}/api/student/courses`, config);
-        setCourses(res.data?.courses || []);
-        setSelectedCourseKey((prev) => {
-          if (prev) return prev;
-          const first = (res.data?.courses || [])[0] || '';
-          return first;
-        });
-      } catch (err) {
-        setCourses([]);
-      } finally {
-        setCoursesLoading(false);
-      }
-    };
-
-    fetchCourses();
-  }, []);
-
-  useEffect(() => {
-    if (!selectedCourseKey) return;
+    if (!activeCourseKey) return;
     const loadHistory = async () => {
       try {
         setHistoryLoading(true);
         const token = localStorage.getItem('token');
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(
-          `${API_BASE}/api/student/chat-history?course_key=${encodeURIComponent(selectedCourseKey)}`,
+          `${API_BASE}/api/student/chat-history?course_key=${encodeURIComponent(activeCourseKey)}`,
           config
         );
         setMessages(Array.isArray(res.data?.messages) ? res.data.messages : []);
@@ -67,15 +42,15 @@ const Chatbot = () => {
     };
 
     loadHistory();
-  }, [selectedCourseKey]);
+  }, [activeCourseKey]);
 
   const clearHistory = async () => {
-    if (!selectedCourseKey || loading) return;
+    if (!activeCourseKey || loading) return;
     try {
       const token = localStorage.getItem('token');
       const config = { headers: { Authorization: `Bearer ${token}` } };
       await axios.delete(
-        `${API_BASE}/api/student/chat-history?course_key=${encodeURIComponent(selectedCourseKey)}`,
+        `${API_BASE}/api/student/chat-history?course_key=${encodeURIComponent(activeCourseKey)}`,
         config
       );
       setMessages([]);
@@ -87,7 +62,7 @@ const Chatbot = () => {
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
-    if (!selectedCourseKey) return;
+    if (!activeCourseKey) return;
 
     const userMessage = input;
     setMessages(prev => [...prev, { text: userMessage, sender: 'user' }]);
@@ -98,7 +73,8 @@ const Chatbot = () => {
       const payload = {
         message: userMessage,
         student_level: studentLevel,
-        course_key: selectedCourseKey,
+        course_id: activeCourseId,
+        course_key: activeCourseKey,
         history: messages.slice(-20),
       };
 
@@ -125,28 +101,16 @@ const Chatbot = () => {
             <p className="chatgpt-subtitle">Ask doubts anytime, with context-aware RAG answers</p>
           </div>
         </div>
-        <button type="button" className="chatgpt-clear" onClick={clearHistory} disabled={!selectedCourseKey || loading}>
+        <button type="button" className="chatgpt-clear" onClick={clearHistory} disabled={!activeCourseKey || loading}>
           <Trash2 size={14} />
           Clear
         </button>
       </div>
 
       <div className="chatgpt-toolbar">
-        <select
-          value={selectedCourseKey}
-          onChange={(e) => setSelectedCourseKey(e.target.value)}
-          disabled={coursesLoading || !courses.length}
-          className="chatgpt-select"
-        >
-          {coursesLoading && <option value="">Loading courses...</option>}
-          {!coursesLoading && courses.length === 0 && <option value="">No courses uploaded</option>}
-          {courses.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-
+        <div className="chatgpt-select" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span>{activeCourseKey ? `Course: ${activeCourse?.title}` : 'Select a course to begin'}</span>
+        </div>
         <select value={studentLevel} onChange={(e) => setStudentLevel(e.target.value)} className="chatgpt-select">
           <option value="beginner">Beginner</option>
           <option value="intermediate">Intermediate</option>
@@ -191,12 +155,12 @@ const Chatbot = () => {
         <input
           type="text"
           className="chatgpt-input"
-          placeholder={selectedCourseKey ? 'Ask anything about your module...' : 'Select a course to begin'}
+          placeholder={activeCourseKey ? 'Ask anything about your module...' : 'Select a course to begin'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          disabled={!selectedCourseKey}
+          disabled={!activeCourseKey}
         />
-        <button type="submit" disabled={loading || !selectedCourseKey || !input.trim()} className="chatgpt-send">
+        <button type="submit" disabled={loading || !activeCourseKey || !input.trim()} className="chatgpt-send">
           <Send size={16} />
         </button>
       </form>

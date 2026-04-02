@@ -7,11 +7,12 @@ import ProfessorMaterialsUploader from '../components/ProfessorMaterialsUploader
 import QuickGuide from '../components/QuickGuide';
 import EvaluationReviewer from '../components/EvaluationReviewer';
 import { API_BASE } from '../config/api';
+import CourseSwitcher from '../components/CourseSwitcher';
+import { useActiveCourse } from '../context/ActiveCourseContext';
 
 const ProfessorDashboard = () => {
   const navigate = useNavigate();
   const [analytics, setAnalytics] = useState(null);
-  const [filterCourse, setFilterCourse] = useState('All');
   const [filterTopic, setFilterTopic] = useState('All');
   const [filterStudent, setFilterStudent] = useState('All');
   const [selectedStudent, setSelectedStudent] = useState(null);
@@ -36,6 +37,27 @@ const ProfessorDashboard = () => {
   const [weeklyUpdateHistory, setWeeklyUpdateHistory] = useState([]);
   const [weeklyUpdateMessage, setWeeklyUpdateMessage] = useState('');
   const [weeklyUpdateSaving, setWeeklyUpdateSaving] = useState(false);
+  const [courses, setCourses] = useState([]);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+  const [courseForm, setCourseForm] = useState({ title: '', description: '' });
+  const [courseMessage, setCourseMessage] = useState('');
+  const [inviteInputs, setInviteInputs] = useState({});
+  const [inviteStatus, setInviteStatus] = useState({});
+  const { activeCourseId, activeCourse, isAllCourses, setActiveCourseId } = useActiveCourse();
+  const [assignments, setAssignments] = useState([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentForm, setAssignmentForm] = useState({
+    title: '',
+    description: '',
+    deadline: '',
+    rubric: '',
+    files: [],
+  });
+  const [assignmentMessage, setAssignmentMessage] = useState('');
+  const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
+  const [assignmentSubmissionsLoading, setAssignmentSubmissionsLoading] = useState({});
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState('');
+  const [gradeInputs, setGradeInputs] = useState({});
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') || 'dark';
@@ -46,7 +68,8 @@ const ProfessorDashboard = () => {
       try {
         const token = localStorage.getItem('token');
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        const res = await axios.get(`${API_BASE}/api/professor/analytics`, config);
+        const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+        const res = await axios.get(`${API_BASE}/api/professor/analytics${courseQuery}`, config);
         setAnalytics(res.data);
       } catch (err) {
         console.error("Failed to fetch analytics", err);
@@ -77,7 +100,182 @@ const ProfessorDashboard = () => {
     fetchAnalytics();
     fetchRubrics();
     fetchWeeklyUpdates();
-  }, []);
+  }, [activeCourseId]);
+
+  useEffect(() => {
+    if (activeCourse?.courseCode && !weeklyUpdateForm.courseKey) {
+      setWeeklyUpdateForm((prev) => ({ ...prev, courseKey: activeCourse.courseCode }));
+    }
+  }, [activeCourse, weeklyUpdateForm.courseKey]);
+
+  useEffect(() => {
+    if (activeCourse?.courseCode && !newRubric.courseKey) {
+      setNewRubric((prev) => ({ ...prev, courseKey: activeCourse.courseCode }));
+    }
+  }, [activeCourse, newRubric.courseKey]);
+
+  useEffect(() => {
+    if (activeTab === 'courses') {
+      fetchAssignments();
+    }
+  }, [activeTab, activeCourseId]);
+
+  const fetchCourses = async () => {
+    try {
+      setCoursesLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/professor/courses`, config);
+      setCourses(Array.isArray(res.data?.records) ? res.data.records : []);
+    } catch (err) {
+      setCourses([]);
+    } finally {
+      setCoursesLoading(false);
+    }
+  };
+
+  const fetchAssignments = async () => {
+    try {
+      setAssignmentsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+      const res = await axios.get(`${API_BASE}/api/professor/assignments${courseQuery}`, config);
+      setAssignments(Array.isArray(res.data?.assignments) ? res.data.assignments : []);
+    } catch (err) {
+      setAssignments([]);
+    } finally {
+      setAssignmentsLoading(false);
+    }
+  };
+
+  const createAssignment = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setAssignmentMessage('Select a course before creating assignments.');
+      return;
+    }
+    if (!assignmentForm.title.trim() || !assignmentForm.deadline) {
+      setAssignmentMessage('Title and deadline are required.');
+      return;
+    }
+
+    try {
+      setAssignmentMessage('');
+      const token = localStorage.getItem('token');
+      const form = new FormData();
+      form.append('title', assignmentForm.title);
+      form.append('description', assignmentForm.description);
+      form.append('courseId', activeCourseId);
+      form.append('deadline', assignmentForm.deadline);
+      form.append('rubric', assignmentForm.rubric);
+      assignmentForm.files.forEach((file) => form.append('files', file));
+
+      await axios.post(`${API_BASE}/api/professor/assignments`, form, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      setAssignmentForm({ title: '', description: '', deadline: '', rubric: '', files: [] });
+      setAssignmentMessage('Assignment created.');
+      fetchAssignments();
+    } catch (err) {
+      setAssignmentMessage(err.response?.data?.message || 'Failed to create assignment.');
+    }
+  };
+
+  const fetchAssignmentSubmissions = async (assignmentId) => {
+    try {
+      setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: true }));
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/professor/assignments/${assignmentId}/submissions`, config);
+      setAssignmentSubmissions((prev) => ({
+        ...prev,
+        [assignmentId]: Array.isArray(res.data?.submissions) ? res.data.submissions : [],
+      }));
+    } catch (err) {
+      setAssignmentSubmissions((prev) => ({ ...prev, [assignmentId]: [] }));
+    } finally {
+      setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: false }));
+    }
+  };
+
+  const saveSubmissionGrade = async (assignmentId, submissionId) => {
+    const payload = gradeInputs[submissionId] || {};
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(
+        `${API_BASE}/api/professor/assignments/${assignmentId}/submissions/${submissionId}/grade`,
+        {
+          score: payload.score,
+          feedback: payload.feedback,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      fetchAssignmentSubmissions(assignmentId);
+    } catch (err) {
+      setAssignmentMessage(err.response?.data?.message || 'Failed to save grade.');
+    }
+  };
+
+  const createCourse = async () => {
+    if (!courseForm.title.trim()) {
+      setCourseMessage('Course title is required.');
+      return;
+    }
+
+    try {
+      setCourseMessage('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.post(
+        `${API_BASE}/api/professor/courses`,
+        { title: courseForm.title, description: courseForm.description },
+        config
+      );
+      setCourseForm({ title: '', description: '' });
+      setCourseMessage('Course created successfully.');
+      fetchCourses();
+    } catch (err) {
+      setCourseMessage(err.response?.data?.message || 'Failed to create course.');
+    }
+  };
+
+  const inviteStudents = async (courseId) => {
+    const raw = String(inviteInputs[courseId] || '');
+    const emails = raw
+      .split(/\n|,/)
+      .map((email) => email.trim())
+      .filter(Boolean);
+
+    if (!emails.length) {
+      setInviteStatus((prev) => ({ ...prev, [courseId]: 'Add at least one email address.' }));
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.post(
+        `${API_BASE}/api/professor/courses/${courseId}/invite`,
+        { emails },
+        config
+      );
+      const missing = Array.isArray(res.data?.missing) && res.data.missing.length
+        ? `Missing: ${res.data.missing.join(', ')}`
+        : '';
+      setInviteStatus((prev) => ({
+        ...prev,
+        [courseId]: missing ? `Invited. ${missing}` : 'Students invited successfully.',
+      }));
+      setInviteInputs((prev) => ({ ...prev, [courseId]: '' }));
+      fetchCourses();
+    } catch (err) {
+      setInviteStatus((prev) => ({
+        ...prev,
+        [courseId]: err.response?.data?.message || 'Invite failed.',
+      }));
+    }
+  };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -90,7 +288,8 @@ const ProfessorDashboard = () => {
     try {
       const token = localStorage.getItem('token');
       const config = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.get(`${API_BASE}/api/feedback/evaluations?status=${status}`, config);
+      const courseQuery = activeCourseId && activeCourseId !== 'all' ? `&courseId=${activeCourseId}` : '';
+      const res = await axios.get(`${API_BASE}/api/feedback/evaluations?status=${status}${courseQuery}`, config);
       const normalizedEvaluations = Array.isArray(res.data)
         ? res.data
         : Array.isArray(res.data?.evaluations)
@@ -248,6 +447,16 @@ const ProfessorDashboard = () => {
               <BarChart3 size={18} />
               <span>Student Evaluations</span>
             </button>
+            <button 
+              className={`prof-nav-btn ${activeTab === 'courses' ? 'is-active' : ''}`}
+              onClick={() => {
+                setActiveTab('courses');
+                fetchCourses();
+              }}
+            >
+              <Book size={18} />
+              <span>Course Management</span>
+            </button>
           </nav>
 
           <div className="prof-sidebar-footer">
@@ -278,17 +487,19 @@ const ProfessorDashboard = () => {
             <h1 className="prof-title">Intelligence Hub</h1>
             <p className="prof-subtitle">Welcome back, {professorName}</p>
           </div>
-          
+          <CourseSwitcher label="Active Course" />
           <div className="prof-filters">
             <div className="prof-filter-group">
               <Filter size={13} />
               <select 
-                value={filterCourse} 
-                onChange={(e) => setFilterCourse(e.target.value)} 
+                value={activeCourseId || 'all'}
+                onChange={(e) => setActiveCourseId(e.target.value)}
                 className="prof-select"
               >
-                <option>All Courses</option>
-                <option>CS501</option>
+                <option value="all">All Courses</option>
+                {courses.map((course) => (
+                  <option key={course._id} value={course._id}>{course.title}</option>
+                ))}
               </select>
             </div>
             <div className="prof-filter-group">
@@ -359,6 +570,17 @@ const ProfessorDashboard = () => {
           >
             <BarChart3 size={16} />
             Student Evaluations
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'courses' ? 'is-active' : ''}`}
+            onClick={() => {
+              setActiveTab('courses');
+              fetchCourses();
+            }}
+          >
+            <Book size={16} />
+            Course Management
           </button>
           <button
             type="button"
@@ -876,6 +1098,293 @@ const ProfessorDashboard = () => {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        ) : activeTab === 'courses' ? (
+          <div className="prof-rubric-builder">
+            <div className="prof-rubric-container">
+              <div className="prof-rubric-panel">
+                <h2 className="prof-rubric-title">Create a Course</h2>
+                <div className="prof-rubric-form">
+                  <div className="prof-form-group">
+                    <label className="prof-form-label">Course Title</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Database Systems"
+                      value={courseForm.title}
+                      onChange={(e) => setCourseForm({ ...courseForm, title: e.target.value })}
+                      className="glass-input"
+                    />
+                  </div>
+                  <div className="prof-form-group">
+                    <label className="prof-form-label">Course Description</label>
+                    <textarea
+                      placeholder="Short summary of the course"
+                      value={courseForm.description}
+                      onChange={(e) => setCourseForm({ ...courseForm, description: e.target.value })}
+                      className="glass-input prof-textarea"
+                      rows="4"
+                    />
+                  </div>
+                  <button
+                    onClick={createCourse}
+                    className="btn-primary"
+                    style={{ width: '100%', marginTop: '10px' }}
+                  >
+                    Create Course
+                  </button>
+                  {courseMessage && (
+                    <p style={{ marginTop: '10px', color: 'var(--muted)', fontSize: '0.9rem' }}>{courseMessage}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="prof-rubric-list">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h2 className="prof-rubric-title">Your Courses ({courses.length})</h2>
+                  <button className="btn-secondary" onClick={fetchCourses}>Refresh</button>
+                </div>
+                {coursesLoading ? (
+                  <div className="prof-empty-state">
+                    <Book size={48} style={{ color: 'var(--muted)', opacity: 0.4 }} />
+                    <p>Loading courses...</p>
+                  </div>
+                ) : courses.length === 0 ? (
+                  <div className="prof-empty-state">
+                    <Book size={48} style={{ color: 'var(--muted)', opacity: 0.4 }} />
+                    <p>No courses yet. Create your first course to invite students.</p>
+                  </div>
+                ) : (
+                  <div className="prof-rubric-items">
+                    {courses.map((course) => (
+                      <div key={course._id} className="prof-rubric-item">
+                        <div className="prof-rubric-item-header">
+                          <h3 className="prof-rubric-item-name">{course.title}</h3>
+                          <span className="prof-rubric-score">Code: {course.courseCode}</span>
+                        </div>
+                        {course.description && (
+                          <p className="prof-rubric-item-criteria">{course.description}</p>
+                        )}
+                        <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                          {course.studentsCount || 0} students enrolled
+                        </p>
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <label className="prof-form-label">Invite students by email</label>
+                          <textarea
+                            className="glass-input prof-textarea"
+                            rows="3"
+                            placeholder="student1@example.edu, student2@example.edu"
+                            value={inviteInputs[course._id] || ''}
+                            onChange={(e) =>
+                              setInviteInputs((prev) => ({ ...prev, [course._id]: e.target.value }))
+                            }
+                          />
+                          <button
+                            className="btn-primary"
+                            style={{ marginTop: '8px' }}
+                            onClick={() => inviteStudents(course._id)}
+                          >
+                            Send Invites
+                          </button>
+                          {inviteStatus[course._id] && (
+                            <p style={{ marginTop: '8px', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              {inviteStatus[course._id]}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
+              <h2 className="text-xl font-bold mb-2">Assignments</h2>
+              <p style={{ color: 'var(--muted)', marginBottom: '1rem' }}>
+                Create assignments for the active course and track submissions.
+              </p>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <input
+                  className="glass-input"
+                  placeholder="Assignment title"
+                  value={assignmentForm.title}
+                  onChange={(e) => setAssignmentForm({ ...assignmentForm, title: e.target.value })}
+                />
+                <input
+                  className="glass-input"
+                  type="datetime-local"
+                  value={assignmentForm.deadline}
+                  onChange={(e) => setAssignmentForm({ ...assignmentForm, deadline: e.target.value })}
+                />
+              </div>
+              <textarea
+                className="glass-input"
+                rows="3"
+                style={{ marginTop: '1rem', width: '100%' }}
+                placeholder="Assignment description"
+                value={assignmentForm.description}
+                onChange={(e) => setAssignmentForm({ ...assignmentForm, description: e.target.value })}
+              />
+              <textarea
+                className="glass-input"
+                rows="2"
+                style={{ marginTop: '1rem', width: '100%' }}
+                placeholder="Evaluation rubric"
+                value={assignmentForm.rubric}
+                onChange={(e) => setAssignmentForm({ ...assignmentForm, rubric: e.target.value })}
+              />
+              <input
+                type="file"
+                multiple
+                className="glass-input"
+                style={{ marginTop: '1rem', width: '100%' }}
+                onChange={(e) =>
+                  setAssignmentForm({ ...assignmentForm, files: Array.from(e.target.files || []) })
+                }
+              />
+              <button className="btn-primary" style={{ marginTop: '1rem' }} onClick={createAssignment}>
+                Create Assignment
+              </button>
+              {assignmentMessage && (
+                <p style={{ marginTop: '0.75rem', color: 'var(--muted)' }}>{assignmentMessage}</p>
+              )}
+
+              <div style={{ marginTop: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-lg font-semibold">Assignment List</h3>
+                  <button className="btn-secondary" onClick={fetchAssignments}>Refresh</button>
+                </div>
+                {assignmentsLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading assignments...</p>
+                ) : assignments.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No assignments created yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {assignments.map((assignment) => (
+                      <div key={assignment._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem' }}>
+                          <div>
+                            <h4 className="font-semibold">{assignment.title}</h4>
+                            <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              Due {new Date(assignment.deadline).toLocaleString()}
+                            </p>
+                          </div>
+                          <span style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '999px', background: 'rgba(10, 132, 255, 0.12)', color: 'var(--primary)' }}>
+                            {assignment.course?.courseCode || 'Course'}
+                          </span>
+                        </div>
+                        {assignment.description && (
+                          <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+                            {assignment.description}
+                          </p>
+                        )}
+                        {Array.isArray(assignment.attachments) && assignment.attachments.length > 0 && (
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <p className="text-sm font-semibold">Attachments</p>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+                              {assignment.attachments.map((file) => (
+                                <a
+                                  key={file.url}
+                                  href={`${API_BASE}${file.url}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                >
+                                  {file.originalName || file.filename}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => {
+                              const next = expandedAssignmentId === assignment._id ? '' : assignment._id;
+                              setExpandedAssignmentId(next);
+                              if (next) fetchAssignmentSubmissions(assignment._id);
+                            }}
+                          >
+                            {expandedAssignmentId === assignment._id ? 'Hide Submissions' : 'View Submissions'}
+                          </button>
+                        </div>
+                        {expandedAssignmentId === assignment._id && (
+                          <div style={{ marginTop: '0.75rem' }}>
+                            {assignmentSubmissionsLoading[assignment._id] ? (
+                              <p style={{ color: 'var(--muted)' }}>Loading submissions...</p>
+                            ) : (assignmentSubmissions[assignment._id] || []).length === 0 ? (
+                              <p style={{ color: 'var(--muted)' }}>No submissions yet.</p>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                {(assignmentSubmissions[assignment._id] || []).map((submission) => (
+                                  <div key={submission._id} style={{ padding: '0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                                      <strong>{submission.student?.name || 'Student'} · v{submission.version}</strong>
+                                      <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                                        {new Date(submission.submittedAt).toLocaleString()} {submission.isLate ? '• Late' : ''}
+                                      </span>
+                                    </div>
+                                    {submission.files?.length > 0 && (
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                        {submission.files.map((file) => (
+                                          <a
+                                            key={file.url}
+                                            href={`${API_BASE}${file.url}`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                          >
+                                            {file.originalName || file.filename}
+                                          </a>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+                                      <input
+                                        type="number"
+                                        className="glass-input"
+                                        placeholder="Score"
+                                        value={gradeInputs[submission._id]?.score ?? submission.score ?? ''}
+                                        onChange={(e) =>
+                                          setGradeInputs((prev) => ({
+                                            ...prev,
+                                            [submission._id]: { ...prev[submission._id], score: e.target.value },
+                                          }))
+                                        }
+                                      />
+                                      <input
+                                        type="text"
+                                        className="glass-input"
+                                        placeholder="Feedback"
+                                        value={gradeInputs[submission._id]?.feedback ?? submission.feedback ?? ''}
+                                        onChange={(e) =>
+                                          setGradeInputs((prev) => ({
+                                            ...prev,
+                                            [submission._id]: { ...prev[submission._id], feedback: e.target.value },
+                                          }))
+                                        }
+                                      />
+                                    </div>
+                                    <button
+                                      className="btn-primary"
+                                      style={{ marginTop: '0.5rem' }}
+                                      onClick={() => saveSubmissionGrade(assignment._id, submission._id)}
+                                    >
+                                      Save Grade
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         ) : activeTab === 'evaluations' ? (

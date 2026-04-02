@@ -27,7 +27,12 @@ const userSchema = new mongoose.Schema({
     createdCourses: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Course'
-    }]
+    }],
+    lastActiveCourse: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Course',
+        default: null,
+    }
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

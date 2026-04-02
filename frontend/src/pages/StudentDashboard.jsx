@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -25,6 +25,8 @@ import axios from 'axios';
 import Chatbot from '../components/Chatbot';
 import FeedbackViewer from '../components/FeedbackViewer';
 import { API_BASE } from '../config/api';
+import CourseSwitcher from '../components/CourseSwitcher';
+import { useActiveCourse } from '../context/ActiveCourseContext';
 
 const StudentDashboard = () => {
   const navigate = useNavigate();
@@ -43,6 +45,21 @@ const StudentDashboard = () => {
   const [leaderboard, setLeaderboard] = useState([]);
   const [leaderboardLoading, setLeaderboardLoading] = useState(false);
   const [evaluationCourseKey, setEvaluationCourseKey] = useState('general');
+  const [enrolledCourses, setEnrolledCourses] = useState([]);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joinStatus, setJoinStatus] = useState('');
+  const [joinStatusType, setJoinStatusType] = useState('');
+  const { activeCourseId, activeCourse, isAllCourses, refreshCourses } = useActiveCourse();
+  const [assignments, setAssignments] = useState([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentFiles, setAssignmentFiles] = useState({});
+  const [assignmentStatus, setAssignmentStatus] = useState({});
+  const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
+  const [assignmentSubmissionsLoading, setAssignmentSubmissionsLoading] = useState({});
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState('');
+  const [upcomingAssignments, setUpcomingAssignments] = useState([]);
+  const [upcomingLoading, setUpcomingLoading] = useState(false);
   const [todos, setTodos] = useState([]);
   const [newTodoTitle, setNewTodoTitle] = useState('');
   const [newTodoPriority, setNewTodoPriority] = useState('normal');
@@ -56,15 +73,17 @@ const StudentDashboard = () => {
     setUserName(user.name || 'Student');
     setEvaluationCourseKey((user.courseKey || 'general').toLowerCase());
 
-    // Load todos from localStorage
     const savedTodos = JSON.parse(localStorage.getItem('studentTodos') || '[]');
     setTodos(savedTodos);
+  }, []);
 
+  useEffect(() => {
     const fetchData = async () => {
       try {
         const token = localStorage.getItem('token');
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        const pathRes = await axios.get(`${API_BASE}/api/student/learning-path`, config);
+        const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+        const pathRes = await axios.get(`${API_BASE}/api/student/learning-path${courseQuery}`, config);
         setLearningPath(pathRes.data);
       } catch (err) {
         console.error(err);
@@ -72,7 +91,36 @@ const StudentDashboard = () => {
       }
     };
     fetchData();
+  }, [activeCourseId]);
+
+  useEffect(() => {
+    const fetchUpcoming = async () => {
+      try {
+        setUpcomingLoading(true);
+        const token = localStorage.getItem('token');
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        const res = await axios.get(`${API_BASE}/api/student/assignments/upcoming`, config);
+        setUpcomingAssignments(Array.isArray(res.data?.assignments) ? res.data.assignments : []);
+      } catch (err) {
+        setUpcomingAssignments([]);
+      } finally {
+        setUpcomingLoading(false);
+      }
+    };
+    fetchUpcoming();
   }, []);
+
+  useEffect(() => {
+    if (activeCourse?.courseCode) {
+      setEvaluationCourseKey(activeCourse.courseCode);
+    }
+  }, [activeCourse]);
+
+  useEffect(() => {
+    if (activeTab === 'courses' && activeCourseId && activeCourseId !== 'all') {
+      fetchAssignments();
+    }
+  }, [activeTab, activeCourseId]);
 
   const saveTodosToLocalStorage = (updatedTodos) => {
     localStorage.setItem('studentTodos', JSON.stringify(updatedTodos));
@@ -95,7 +143,7 @@ const StudentDashboard = () => {
   };
 
   const toggleTodo = (id) => {
-    const updatedTodos = todos.map(todo =>
+    const updatedTodos = todos.map((todo) =>
       todo.id === id ? { ...todo, done: !todo.done } : todo
     );
     setTodos(updatedTodos);
@@ -103,12 +151,12 @@ const StudentDashboard = () => {
   };
 
   const deleteTodo = (id) => {
-    const updatedTodos = todos.filter(todo => todo.id !== id);
+    const updatedTodos = todos.filter((todo) => todo.id !== id);
     setTodos(updatedTodos);
     saveTodosToLocalStorage(updatedTodos);
   };
 
-  const completedCount = todos.filter(todo => todo.done).length;
+  const completedCount = todos.filter((todo) => todo.done).length;
   const totalCount = todos.length;
 
   const handleLogout = () => {
@@ -137,6 +185,9 @@ const StudentDashboard = () => {
         const form = new FormData();
         form.append('rubric', rubricText);
         form.append('course_key', evaluationCourseKey);
+        if (activeCourseId && activeCourseId !== 'all') {
+          form.append('course_id', activeCourseId);
+        }
         submissionFiles.forEach((file) => form.append('files', file));
 
         res = await axios.post(`${API_BASE}/api/student/evaluate-files`, form, {
@@ -152,6 +203,7 @@ const StudentDashboard = () => {
             submission_text: submissionText,
             rubric: rubricText,
             course_key: evaluationCourseKey,
+            course_id: activeCourseId && activeCourseId !== 'all' ? activeCourseId : undefined,
           },
           config
         );
@@ -169,7 +221,8 @@ const StudentDashboard = () => {
     try {
       const token = localStorage.getItem('token');
       const config = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.get(`${API_BASE}/api/feedback`, config);
+      const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+      const res = await axios.get(`${API_BASE}/api/feedback${courseQuery}`, config);
       const normalized = Array.isArray(res.data)
         ? res.data
         : Array.isArray(res.data?.feedbacks)
@@ -198,47 +251,168 @@ const StudentDashboard = () => {
     }
   };
 
+  const fetchCourses = async () => {
+    try {
+      setCoursesLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/student/courses`, config);
+      const normalized = Array.isArray(res.data?.records) ? res.data.records : [];
+      setEnrolledCourses(normalized);
+    } catch (err) {
+      setEnrolledCourses([]);
+    } finally {
+      setCoursesLoading(false);
+    }
+  };
+
+  const handleJoinCourse = async () => {
+    if (!joinCode.trim()) return;
+    try {
+      setJoinStatus('');
+      setJoinStatusType('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.post(
+        `${API_BASE}/api/student/courses/join`,
+        { code: joinCode.trim() },
+        config
+      );
+      setJoinStatus('Enrolled successfully.');
+      setJoinStatusType('success');
+      setJoinCode('');
+      fetchCourses();
+      refreshCourses();
+    } catch (err) {
+      setJoinStatus(err.response?.data?.message || 'Failed to join course.');
+      setJoinStatusType('error');
+    }
+  };
+
+  const fetchAssignments = async () => {
+    if (!activeCourseId || activeCourseId === 'all') return;
+    try {
+      setAssignmentsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/student/assignments?courseId=${activeCourseId}`, config);
+      setAssignments(Array.isArray(res.data?.assignments) ? res.data.assignments : []);
+    } catch (err) {
+      setAssignments([]);
+    } finally {
+      setAssignmentsLoading(false);
+    }
+  };
+
+  const submitAssignment = async (assignmentId) => {
+    const files = assignmentFiles[assignmentId] || [];
+    if (!files.length) {
+      setAssignmentStatus((prev) => ({ ...prev, [assignmentId]: 'Select files to submit.' }));
+      return;
+    }
+
+    try {
+      setAssignmentStatus((prev) => ({ ...prev, [assignmentId]: 'Submitting...' }));
+      const token = localStorage.getItem('token');
+      const form = new FormData();
+      files.forEach((file) => form.append('files', file));
+      await axios.post(
+        `${API_BASE}/api/student/assignments/${assignmentId}/submissions`,
+        form,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setAssignmentStatus((prev) => ({ ...prev, [assignmentId]: 'Submission received.' }));
+      setAssignmentFiles((prev) => ({ ...prev, [assignmentId]: [] }));
+      fetchAssignments();
+    } catch (err) {
+      setAssignmentStatus((prev) => ({
+        ...prev,
+        [assignmentId]: err.response?.data?.message || 'Submission failed.',
+      }));
+    }
+  };
+
+  const fetchAssignmentSubmissions = async (assignmentId) => {
+    try {
+      setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: true }));
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/student/assignments/${assignmentId}/submissions`, config);
+      setAssignmentSubmissions((prev) => ({
+        ...prev,
+        [assignmentId]: Array.isArray(res.data?.submissions) ? res.data.submissions : [],
+      }));
+    } catch (err) {
+      setAssignmentSubmissions((prev) => ({ ...prev, [assignmentId]: [] }));
+    } finally {
+      setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: false }));
+    }
+  };
+
+  const getAssignmentStatus = (assignment) => {
+    const submission = assignment.latestSubmission;
+    const deadline = assignment.deadline ? new Date(assignment.deadline) : null;
+    const isPastDue = deadline ? new Date() > deadline : false;
+
+    if (!submission) {
+      return isPastDue ? { label: 'Missing', tone: 'error' } : { label: 'Pending', tone: 'muted' };
+    }
+
+    if (submission.score !== null && submission.score !== undefined) {
+      return { label: `Graded • ${submission.score}`, tone: 'primary' };
+    }
+
+    if (submission.isLate) {
+      return { label: `Late • v${submission.version}`, tone: 'error' };
+    }
+
+    return { label: `Submitted • v${submission.version}`, tone: 'success' };
+  };
+
   return (
     <div className="dashboard-layout">
       {/* Sidebar */}
       <div className="dashboard-sidebar">
         <h2 className="text-xl mb-8"><span className="text-gradient">Student Hub</span></h2>
-        
+
         <div style={{ flex: 1, marginTop: '20px' }} className="flex flex-col gap-4 w-full">
-          <button 
-            className={`flex items-center gap-4 w-full ${activeTab === 'dashboard' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`} 
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'dashboard' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => setActiveTab('dashboard')}
           >
             <LayoutDashboard size={20} />
             <span className="font-medium">Dashboard Overview</span>
           </button>
-          <button 
-            className={`flex items-center gap-4 w-full ${activeTab === 'evaluate' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`} 
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'evaluate' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => setActiveTab('evaluate')}
           >
             <FileText size={20} />
             <span className="font-medium">AI Project Evaluation</span>
           </button>
-          <button 
-            className={`flex items-center gap-4 w-full ${activeTab === 'learning' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`} 
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'learning' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => setActiveTab('learning')}
           >
             <Target size={20} />
             <span className="font-medium">Learning Path</span>
           </button>
-          <button 
-            className={`flex items-center gap-4 w-full ${activeTab === 'courses' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`} 
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'courses' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
-            onClick={() => setActiveTab('courses')}
+            onClick={() => {
+              setActiveTab('courses');
+              fetchCourses();
+            }}
           >
             <Book size={20} />
             <span className="font-medium">Course Modules</span>
           </button>
-          <button 
-            className={`flex items-center gap-4 w-full ${activeTab === 'analytics' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`} 
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'analytics' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => {
               setActiveTab('analytics');
@@ -248,8 +422,8 @@ const StudentDashboard = () => {
             <Users size={20} />
             <span className="font-medium">Team & Analytics</span>
           </button>
-          <button 
-            className={`flex items-center gap-4 w-full ${activeTab === 'feedback' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`} 
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'feedback' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => {
               setActiveTab('feedback');
@@ -262,18 +436,18 @@ const StudentDashboard = () => {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%' }}>
-          <button 
-            className="flex items-center gap-4 btn-secondary w-full" 
-            style={{ border: 'none', justifyContent: 'flex-start' }} 
+          <button
+            className="flex items-center gap-4 btn-secondary w-full"
+            style={{ border: 'none', justifyContent: 'flex-start' }}
             onClick={toggleTheme}
           >
             {isDark ? <Sun size={20} /> : <Moon size={20} />}
             <span>{isDark ? 'Light Mode' : 'Dark Mode'}</span>
           </button>
-          
-          <button 
-            className="flex items-center gap-4 btn-secondary w-full" 
-            style={{ border: 'none', justifyContent: 'flex-start', color: 'var(--error)' }} 
+
+          <button
+            className="flex items-center gap-4 btn-secondary w-full"
+            style={{ border: 'none', justifyContent: 'flex-start', color: 'var(--error)' }}
             onClick={handleLogout}
           >
             <LogOut size={20} />
@@ -284,11 +458,12 @@ const StudentDashboard = () => {
 
       {/* Main Content */}
       <div className="dashboard-content">
-        <div className="glass-panel" style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="glass-panel" style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1.5rem', flexWrap: 'wrap' }}>
           <div>
             <h1 className="text-3xl font-bold mb-2">Welcome back, {userName} 👋</h1>
             <p className="text-muted">Ready to learn today?</p>
           </div>
+          <CourseSwitcher label="Active Course" />
           <div
             className="px-4 py-2 rounded-lg flex items-center gap-2 text-sm"
             style={{
@@ -315,53 +490,51 @@ const StudentDashboard = () => {
                   See all →
                 </a>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {[
-                  { title: 'Database Design Project', daysLeft: 2, course: 'CSE 202', progress: 37, urgent: true },
-                  { title: 'Algorithm Challenge', daysLeft: 5, course: 'CSE 301', progress: 0, urgent: false },
-                ].map((deadline, idx) => (
-                  <div
-                    key={idx}
-                    className="p-4 rounded-lg border"
-                    style={{
-                      background: 'var(--surface-hover)',
-                      borderColor: 'var(--border)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', alignItems: 'center' }}>
-                      <div>
-                        <h3 className="font-semibold">{deadline.title}</h3>
-                        <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>{deadline.course}</p>
-                      </div>
-                      <span
+              {upcomingLoading ? (
+                <p style={{ color: 'var(--muted)' }}>Loading upcoming deadlines...</p>
+              ) : upcomingAssignments.length === 0 ? (
+                <p style={{ color: 'var(--muted)' }}>No upcoming deadlines yet.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {upcomingAssignments.map((deadline) => {
+                    const dueAt = new Date(deadline.deadline);
+                    const diffDays = Math.max(0, Math.ceil((dueAt - new Date()) / (1000 * 60 * 60 * 24)));
+                    const urgent = diffDays <= 2;
+                    return (
+                      <div
+                        key={deadline._id}
+                        className="p-4 rounded-lg border"
                         style={{
-                          padding: '0.5rem 0.75rem',
-                          borderRadius: '9999px',
-                          fontSize: '0.75rem',
-                          fontWeight: 500,
-                          background: deadline.urgent ? 'rgba(255, 59, 48, 0.15)' : 'rgba(255, 193, 7, 0.15)',
-                          color: deadline.urgent ? '#FF3B30' : '#FFC107',
+                          background: 'var(--surface-hover)',
+                          borderColor: 'var(--border)',
                         }}
                       >
-                        {deadline.daysLeft} days left
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <div style={{ flex: 1, height: '8px', borderRadius: '9999px', background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            width: `${deadline.progress}%`,
-                            height: '100%',
-                            background: 'var(--primary)',
-                            transition: 'width 0.3s ease'
-                          }}
-                        />
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', alignItems: 'center' }}>
+                          <div>
+                            <h3 className="font-semibold">{deadline.title}</h3>
+                            <p style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>{deadline.course?.courseCode || ''}</p>
+                          </div>
+                          <span
+                            style={{
+                              padding: '0.5rem 0.75rem',
+                              borderRadius: '9999px',
+                              fontSize: '0.75rem',
+                              fontWeight: 500,
+                              background: urgent ? 'rgba(255, 59, 48, 0.15)' : 'rgba(255, 193, 7, 0.15)',
+                              color: urgent ? '#FF3B30' : '#FFC107',
+                            }}
+                          >
+                            {diffDays} days left
+                          </span>
+                        </div>
+                        <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                          Due {dueAt.toLocaleString()}
+                        </p>
                       </div>
-                      <span style={{ color: 'var(--muted)', fontSize: '0.875rem' }}>{deadline.progress}%</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             {/* Learning and Practice Row */}
@@ -443,78 +616,7 @@ const StudentDashboard = () => {
                   <Award size={20} style={{ color: 'var(--primary)' }} />
                   <h2 className="text-xl font-semibold">Practice Tests</h2>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {[
-                    { title: 'Base: Lectures', completion: 87, topic: 'Normalization' },
-                    { title: 'Advanced MongoDB', completion: 30, topic: 'Indexing' },
-                  ].map((test, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        padding: '0.5rem 1rem',
-                        borderRadius: '0.5rem',
-                        background: 'var(--surface-hover)',
-                        border: '1px solid var(--border)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                        <span
-                          style={{
-                            width: '24px',
-                            height: '24px',
-                            borderRadius: '50%',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '0.75rem',
-                            fontWeight: 'bold',
-                            background: test.completion > 70 ? '#34C759' : 'var(--primary)',
-                            color: 'white'
-                          }}
-                        >
-                          {test.completion > 0 && '✓'}
-                        </span>
-                        <div style={{ flex: 1 }}>
-                          <h3 className="font-semibold text-sm">{test.title}</h3>
-                          <p style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{test.topic}</p>
-                        </div>
-                        <span style={{ color: 'var(--muted)', fontSize: '0.875rem', fontWeight: 500 }}>
-                          {test.completion}%
-                        </span>
-                      </div>
-                      <div style={{ height: '8px', borderRadius: '9999px', background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            width: `${test.completion}%`,
-                            height: '100%',
-                            background: 'var(--primary)',
-                            transition: 'width 0.3s ease'
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <button
-                  style={{
-                    width: '100%',
-                    marginTop: '1.5rem',
-                    padding: '0.75rem',
-                    borderRadius: '0.5rem',
-                    fontWeight: 500,
-                    background: 'rgba(10, 132, 255, 0.1)',
-                    color: 'var(--primary)',
-                    border: '1px solid var(--primary)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.5rem'
-                  }}
-                >
-                  <Plus size={18} />
-                  Start Quiz
-                </button>
+                <p style={{ color: 'var(--muted)' }}>No practice tests available yet.</p>
               </div>
             </div>
 
@@ -563,7 +665,6 @@ const StudentDashboard = () => {
                 </span>
               </div>
 
-              {/* Add New Todo */}
               <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.75rem' }}>
                 <input
                   type="text"
@@ -609,15 +710,12 @@ const StudentDashboard = () => {
                     gap: '0.5rem',
                     transition: 'all 0.2s ease',
                   }}
-                  onMouseEnter={(e) => e.currentTarget.style.opacity = '0.9'}
-                  onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
                 >
                   <Plus size={18} />
                   Add
                 </button>
               </div>
 
-              {/* Todo List */}
               {totalCount === 0 ? (
                 <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}>
                   <CheckCircle2 size={48} style={{ margin: '0 auto 1rem', opacity: 0.3 }} />
@@ -635,27 +733,13 @@ const StudentDashboard = () => {
                         padding: '0.75rem 1rem',
                         borderRadius: '0.5rem',
                         background: task.done ? 'rgba(52, 199, 89, 0.08)' : 'var(--surface-hover)',
-                        border: task.priority === 'urgent' 
+                        border: task.priority === 'urgent'
                           ? '1px solid rgba(255, 59, 48, 0.3)'
                           : task.priority === 'high'
                           ? '1px solid rgba(255, 193, 7, 0.3)'
                           : '1px solid var(--border)',
                         transition: 'all 0.2s ease',
                         opacity: task.done ? 0.7 : 1,
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = task.done
-                          ? 'rgba(52, 199, 89, 0.12)'
-                          : 'var(--surface-hover)';
-                        e.currentTarget.style.borderColor = 'var(--primary)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = task.done ? 'rgba(52, 199, 89, 0.08)' : 'var(--surface-hover)';
-                        e.currentTarget.style.borderColor = task.priority === 'urgent'
-                          ? 'rgba(255, 59, 48, 0.3)'
-                          : task.priority === 'high'
-                          ? 'rgba(255, 193, 7, 0.3)'
-                          : 'var(--border)';
                       }}
                     >
                       <button
@@ -673,22 +757,10 @@ const StudentDashboard = () => {
                           cursor: 'pointer',
                           transition: 'all 0.2s ease',
                         }}
-                        onMouseEnter={(e) => {
-                          if (!task.done) {
-                            e.currentTarget.style.borderColor = 'var(--primary)';
-                            e.currentTarget.style.background = 'rgba(10, 132, 255, 0.1)';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!task.done) {
-                            e.currentTarget.style.borderColor = 'var(--border)';
-                            e.currentTarget.style.background = 'transparent';
-                          }
-                        }}
                       >
                         {task.done && <Check size={16} style={{ color: 'white' }} />}
                       </button>
-                      
+
                       <span
                         style={{
                           flex: 1,
@@ -709,7 +781,7 @@ const StudentDashboard = () => {
                           }}
                         />
                       )}
-                      
+
                       {task.priority === 'high' && (
                         <div
                           style={{
@@ -736,12 +808,6 @@ const StudentDashboard = () => {
                           transition: 'all 0.2s ease',
                           flexShrink: 0,
                         }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.color = 'var(--error)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.color = 'var(--muted)';
-                        }}
                       >
                         <Trash2 size={16} />
                       </button>
@@ -750,7 +816,6 @@ const StudentDashboard = () => {
                 </div>
               )}
 
-              {/* Progress Bar */}
               {totalCount > 0 && (
                 <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
@@ -789,7 +854,7 @@ const StudentDashboard = () => {
                   style={{ width: '100%', minHeight: '100px', padding: '12px' }}
                   value={rubricText}
                   onChange={(e) => setRubricText(e.target.value)}
-                  placeholder="1. Clarity (20%)&#10;2. Accuracy (50%)&#10;3. Originality (30%)"
+                  placeholder="1. Clarity (20%)\n2. Accuracy (50%)\n3. Originality (30%)"
                 />
               </div>
 
@@ -800,7 +865,7 @@ const StudentDashboard = () => {
                   style={{ width: '100%', padding: '12px' }}
                   value={evaluationCourseKey}
                   onChange={(e) => setEvaluationCourseKey(e.target.value)}
-                  placeholder="e.g., cs310-database-management-system"
+                  placeholder="Course key"
                 />
               </div>
 
@@ -852,10 +917,7 @@ const StudentDashboard = () => {
               {evaluationData && (
                 <div style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-                    <div
-                      className="glass-card"
-                      style={{ padding: '1.5rem' }}
-                    >
+                    <div className="glass-card" style={{ padding: '1.5rem' }}>
                       <p style={{ color: 'var(--muted)', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
                         Final Score
                       </p>
@@ -863,10 +925,7 @@ const StudentDashboard = () => {
                         {evaluationData.score}%
                       </p>
                     </div>
-                    <div
-                      className="glass-card"
-                      style={{ padding: '1.5rem' }}
-                    >
+                    <div className="glass-card" style={{ padding: '1.5rem' }}>
                       <p style={{ color: 'var(--muted)', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
                         Summary
                       </p>
@@ -921,10 +980,245 @@ const StudentDashboard = () => {
         )}
 
         {activeTab === 'courses' && (
-          <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
-            <Book size={48} style={{ margin: '0 auto 1rem', color: 'var(--secondary)' }} />
-            <h2 className="text-2xl font-bold mb-2">Course Modules</h2>
-            <p style={{ color: 'var(--muted)' }}>Access course materials and modules here</p>
+          <div className="glass-panel" style={{ padding: '2rem 1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <div>
+                <h2 className="text-2xl font-bold mb-2">My Courses</h2>
+                <p style={{ color: 'var(--muted)' }}>Join a class with a code and see your enrolled courses.</p>
+              </div>
+              <button className="btn-secondary" onClick={fetchCourses}>Refresh</button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1.5rem' }}>
+              <label className="text-sm font-semibold">Join Course</label>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <input
+                  className="glass-input"
+                  style={{ flex: 1, minWidth: '240px', textTransform: 'uppercase' }}
+                  placeholder="Enter course code"
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value)}
+                />
+                <button className="btn-primary" onClick={handleJoinCourse}>
+                  Join
+                </button>
+              </div>
+              {joinStatus && (
+                <div className={`auth-alert ${joinStatusType === 'success' ? 'auth-alert--success' : 'auth-alert--error'}`}>
+                  {joinStatus}
+                </div>
+              )}
+            </div>
+
+            {isAllCourses ? (
+              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}>
+                <Book size={48} style={{ margin: '0 auto 1rem', opacity: 0.5 }} />
+                <p>Select a course to view modules, assignments, and announcements.</p>
+              </div>
+            ) : coursesLoading ? (
+              <p style={{ color: 'var(--muted)' }}>Loading courses...</p>
+            ) : enrolledCourses.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)' }}>
+                <Book size={48} style={{ margin: '0 auto 1rem', opacity: 0.5 }} />
+                <p>No enrolled courses yet. Use a course code to join.</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+                  {enrolledCourses.map((course) => (
+                    <div key={course._id} className="glass-card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                        <div>
+                          <h3 className="text-lg font-semibold">{course.title}</h3>
+                          <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                            {course.courseCode}
+                          </p>
+                        </div>
+                        <span style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '999px', background: 'rgba(10, 132, 255, 0.12)', color: 'var(--primary)' }}>
+                          {course.studentsCount || 0} students
+                        </span>
+                      </div>
+                      {course.description && (
+                        <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginTop: '0.75rem' }}>{course.description}</p>
+                      )}
+                      {course.professor?.name && (
+                        <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
+                          Professor: {course.professor.name}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: '2rem' }}>
+                  <h3 className="text-xl font-semibold" style={{ marginBottom: '1rem' }}>Assignments</h3>
+                  <button className="btn-secondary" onClick={fetchAssignments}>Refresh Assignments</button>
+
+                  {assignmentsLoading ? (
+                    <p style={{ color: 'var(--muted)', marginTop: '1rem' }}>Loading assignments...</p>
+                  ) : assignments.length === 0 ? (
+                    <p style={{ color: 'var(--muted)', marginTop: '1rem' }}>No assignments yet for this course.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
+                      {assignments.map((assignment) => (
+                        <div key={assignment._id} className="glass-card" style={{ padding: '1.25rem', borderRadius: '12px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem' }}>
+                            <div>
+                              <h4 className="text-lg font-semibold">{assignment.title}</h4>
+                              <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                                Due {new Date(assignment.deadline).toLocaleString()}
+                              </p>
+                            </div>
+                            {(() => {
+                              const status = getAssignmentStatus(assignment);
+                              const toneMap = {
+                                primary: { bg: 'rgba(10, 132, 255, 0.15)', color: '#0A84FF' },
+                                success: { bg: 'rgba(52, 199, 89, 0.15)', color: '#34C759' },
+                                error: { bg: 'rgba(255, 59, 48, 0.15)', color: '#FF3B30' },
+                                muted: { bg: 'rgba(120, 120, 120, 0.2)', color: 'var(--muted)' },
+                              };
+                              const style = toneMap[status.tone] || toneMap.muted;
+                              return (
+                                <span style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '999px', background: style.bg, color: style.color }}>
+                                  {status.label}
+                                </span>
+                              );
+                            })()}
+                          </div>
+                          {assignment.description && (
+                            <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginTop: '0.75rem' }}>{assignment.description}</p>
+                          )}
+                          {assignment.rubric && (
+                            <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.5rem' }}>Rubric: {assignment.rubric}</p>
+                          )}
+                          {Array.isArray(assignment.attachments) && assignment.attachments.length > 0 && (
+                            <div style={{ marginTop: '0.75rem' }}>
+                              <p className="text-sm font-semibold">Attachments</p>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+                                {assignment.attachments.map((file) => (
+                                  <a
+                                    key={file.url}
+                                    href={`${API_BASE}${file.url}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                  >
+                                    {file.originalName || file.filename}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {assignment.latestSubmission?.files?.length > 0 && (
+                            <div style={{ marginTop: '0.75rem' }}>
+                              <p className="text-sm font-semibold">Latest Submission</p>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+                                {assignment.latestSubmission.files.map((file) => (
+                                  <a
+                                    key={file.url}
+                                    href={`${API_BASE}${file.url}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                  >
+                                    {file.originalName || file.filename}
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <label className="text-sm font-semibold">Submit files</label>
+                            <input
+                              type="file"
+                              multiple
+                              className="glass-input"
+                              style={{ width: '100%', marginTop: '0.5rem' }}
+                              onChange={(e) =>
+                                setAssignmentFiles((prev) => ({
+                                  ...prev,
+                                  [assignment._id]: Array.from(e.target.files || []),
+                                }))
+                              }
+                            />
+                            <button
+                              className="btn-primary"
+                              style={{ marginTop: '0.75rem' }}
+                              onClick={() => submitAssignment(assignment._id)}
+                            >
+                              Submit
+                            </button>
+                            {assignmentStatus[assignment._id] && (
+                              <p style={{ marginTop: '0.5rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                                {assignmentStatus[assignment._id]}
+                              </p>
+                            )}
+                          </div>
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <button
+                              className="btn-secondary"
+                              onClick={() => {
+                                const next = expandedAssignmentId === assignment._id ? '' : assignment._id;
+                                setExpandedAssignmentId(next);
+                                if (next) fetchAssignmentSubmissions(assignment._id);
+                              }}
+                            >
+                              {expandedAssignmentId === assignment._id ? 'Hide Timeline' : 'View Timeline'}
+                            </button>
+                          </div>
+                          {expandedAssignmentId === assignment._id && (
+                            <div style={{ marginTop: '0.75rem' }}>
+                              {assignmentSubmissionsLoading[assignment._id] ? (
+                                <p style={{ color: 'var(--muted)' }}>Loading submissions...</p>
+                              ) : (assignmentSubmissions[assignment._id] || []).length === 0 ? (
+                                <p style={{ color: 'var(--muted)' }}>No submissions yet.</p>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                  {(assignmentSubmissions[assignment._id] || []).map((submission) => (
+                                    <div key={submission._id} style={{ padding: '0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                                        <strong>Version {submission.version}</strong>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                                          {new Date(submission.submittedAt).toLocaleString()}
+                                        </span>
+                                      </div>
+                                      <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                                        Status: {submission.isLate ? 'Late' : 'On time'}
+                                        {submission.score !== null && submission.score !== undefined && ` • Score: ${submission.score}`}
+                                      </div>
+                                      {submission.feedback && (
+                                        <p style={{ marginTop: '0.35rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
+                                          Feedback: {submission.feedback}
+                                        </p>
+                                      )}
+                                      {submission.files?.length > 0 && (
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+                                          {submission.files.map((file) => (
+                                            <a
+                                              key={file.url}
+                                              href={`${API_BASE}${file.url}`}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                            >
+                                              {file.originalName || file.filename}
+                                            </a>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -991,8 +1285,6 @@ const StudentDashboard = () => {
                           cursor: 'pointer',
                           transition: 'all 0.25s ease',
                         }}
-                        onMouseEnter={(e) => e.currentTarget.style.borderColor = 'rgba(10, 132, 255, 0.5)'}
-                        onMouseLeave={(e) => e.currentTarget.style.borderColor = 'rgba(10, 132, 255, 0.2)'}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
                           <div>
@@ -1055,9 +1347,9 @@ const StudentDashboard = () => {
                 >
                   ← Back to Feedback List
                 </button>
-                <FeedbackViewer 
-                  evaluationId={selectedFeedback} 
-                  courseKey={feedbackList.find(f => f._id === selectedFeedback)?.courseKey}
+                <FeedbackViewer
+                  evaluationId={selectedFeedback}
+                  courseKey={feedbackList.find((f) => f._id === selectedFeedback)?.courseKey}
                 />
               </div>
             )}
@@ -1069,4 +1361,3 @@ const StudentDashboard = () => {
 };
 
 export default StudentDashboard;
-

@@ -4,6 +4,9 @@ const Rubric = require('../models/Rubric');
 const WeeklyUpdate = require('../models/WeeklyUpdate');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const Course = require('../models/Course');
+const Assignment = require('../models/Assignment');
+const Submission = require('../models/Submission');
 const { getAiServiceUrl } = require('../config/services');
 
 const AI_BASE = getAiServiceUrl();
@@ -18,9 +21,7 @@ const normalizeCourseKey = (value) =>
 
 const parseListInput = (value) => {
     if (Array.isArray(value)) {
-        return value
-            .map((item) => String(item || '').trim())
-            .filter(Boolean);
+        return value.map((item) => String(item || '').trim()).filter(Boolean);
     }
     return String(value || '')
         .split(/\n|,/)
@@ -262,40 +263,163 @@ const sendWeeklyUpdate = async (req, res) => {
             }
         }
 
-        res.status(201).json({
-            message: embedded
-                ? 'Weekly update ingested and published to students.'
-                : 'Weekly update saved and published. AI ingestion is currently offline.',
-            weeklyUpdate,
-            ingestion: {
-                embedded,
-                chunksAdded: Number(aiIngestion?.chunks_added || 0),
-                faissEnabled: Boolean(aiIngestion?.faiss_enabled),
-            },
+        return res.status(201).json({
+            message: 'Weekly update published.',
+            update: weeklyUpdate,
         });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return res.status(500).json({ message: error.message || 'Failed to publish weekly update' });
+    }
+};
+
+const getAnalytics = async (req, res) => {
+    try {
+        const professorId = req.user?._id;
+        const { courseId } = req.query || {};
+
+        if (!professorId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        let courses = [];
+        if (courseId) {
+            const course = await Course.findOne({ _id: courseId, professor: professorId }).lean();
+            courses = course ? [course] : [];
+        } else {
+            courses = await Course.find({ professor: professorId }).lean();
+        }
+
+        const courseIds = courses.map((course) => course._id);
+        if (!courseIds.length) {
+            return res.status(200).json({
+                overview: { totalStudents: 0, avgScore: 0, activeProjects: 0 },
+                students: [],
+                progressTrend: [],
+                topicPerformance: [],
+                weakAreas: [],
+            });
+        }
+
+        const assignments = await Assignment.find({ course: { $in: courseIds } })
+            .select('_id deadline')
+            .lean();
+        const assignmentIds = assignments.map((assignment) => assignment._id);
+
+        const studentIds = new Set();
+        courses.forEach((course) => {
+            (course.students || []).forEach((id) => studentIds.add(String(id)));
+        });
+
+        const students = await User.find({ _id: { $in: Array.from(studentIds) } })
+            .select('_id name')
+            .lean();
+
+        const submissions = await Submission.find({
+            assignment: { $in: assignmentIds },
+            isLatest: true,
+        })
+            .populate('student', 'name')
+            .lean();
+
+        const submissionsByStudent = new Map();
+        submissions.forEach((submission) => {
+            const studentId = String(submission.student?._id || submission.student);
+            if (!submissionsByStudent.has(studentId)) {
+                submissionsByStudent.set(studentId, []);
+            }
+            submissionsByStudent.get(studentId).push(submission);
+        });
+
+        const totalAssignments = assignments.length || 0;
+        let totalScore = 0;
+        let scoredCount = 0;
+
+        const studentRows = students.map((student) => {
+            const studentId = String(student._id);
+            const studentSubs = submissionsByStudent.get(studentId) || [];
+            const completed = studentSubs.length;
+            const scoredSubs = studentSubs.filter((sub) => Number.isFinite(sub.score));
+            const avgScore = scoredSubs.length
+                ? Math.round(scoredSubs.reduce((sum, sub) => sum + Number(sub.score || 0), 0) / scoredSubs.length)
+                : 0;
+
+            if (scoredSubs.length) {
+                totalScore += avgScore;
+                scoredCount += 1;
+            }
+
+            const progress = totalAssignments ? Math.round((completed / totalAssignments) * 100) : 0;
+
+            return {
+                id: studentId,
+                name: student.name,
+                score: avgScore,
+                progress,
+                weak: '',
+                weakAreas: [],
+                interactionCount: completed,
+                topicScores: {},
+            };
+        });
+
+        const avgScore = scoredCount ? Math.round(totalScore / scoredCount) : 0;
+
+        const now = new Date();
+        const weeks = Array.from({ length: 6 }).map((_, idx) => {
+            const start = new Date(now);
+            start.setDate(now.getDate() - (5 - idx) * 7);
+            start.setHours(0, 0, 0, 0);
+            const end = new Date(start);
+            end.setDate(start.getDate() + 7);
+            const label = `Week ${idx + 1}`;
+
+            const weekCount = submissions.filter((sub) => {
+                const date = new Date(sub.submittedAt || sub.createdAt);
+                return date >= start && date < end;
+            }).length;
+
+            const denom = totalAssignments * (students.length || 1);
+            const progress = denom ? Math.round((weekCount / denom) * 100) : 0;
+
+            return { week: label, progress };
+        });
+
+        const analyticsData = {
+            overview: {
+                totalStudents: students.length,
+                avgScore,
+                activeProjects: totalAssignments,
+            },
+            students: studentRows,
+            progressTrend: weeks,
+            topicPerformance: [],
+            weakAreas: [],
+        };
+
+        return res.status(200).json(analyticsData);
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to load analytics' });
     }
 };
 
 const getRubrics = async (req, res) => {
     try {
         const professorId = req.user?._id;
-        const { course_key = 'all' } = req.query || {};
+        const { course_key } = req.query || {};
         if (!professorId) {
             return res.status(401).json({ message: 'Unauthorized' });
         }
 
         const query = { professor: professorId };
-        const courseKey = normalizeCourseKey(course_key);
-        if (course_key !== 'all' && courseKey) {
-            query.courseKey = courseKey;
+        const normalized = normalizeCourseKey(course_key);
+        if (normalized) {
+            query.courseKey = normalized;
         }
 
-        const rubrics = await Rubric.find(query).sort({ createdAt: -1 });
-        res.status(200).json({ total: rubrics.length, rubrics });
+        const rubrics = await Rubric.find(query).sort({ createdAt: -1 }).lean();
+        return res.status(200).json({ rubrics });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return res.status(500).json({ message: error.message || 'Failed to load rubrics' });
     }
 };
 
@@ -318,119 +442,6 @@ const getWeeklyUpdates = async (req, res) => {
             .limit(Math.max(1, Math.min(100, Number(limit) || 20)));
 
         res.status(200).json({ total: updates.length, updates });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-const getAnalytics = async (req, res) => {
-    try {
-        const { studentProfileStore } = require('../utils/studentProfileStore');
-        const { getProfile } = require('../utils/studentProfileStore');
-        
-        // In a real app, this would query the database
-        // For now, we'll create mock data based on the studentProfileStore pattern
-        const allStudents = [];
-        const topicScoreMap = {};
-        const topicWeakCountMap = {};
-        let totalScore = 0;
-        let scoredCount = 0;
-        
-        // Simulate aggregate student data from profiles
-        // In production, query actual student collection from DB
-        const mockStudents = [
-            { id: 'S001', name: 'Alice Johnson' },
-            { id: 'S002', name: 'Bob Smith' },
-            { id: 'S003', name: 'Carol White' },
-            { id: 'S004', name: 'David Lee' },
-            { id: 'S005', name: 'Emma Davis' },
-        ];
-        
-        mockStudents.forEach((student) => {
-            try {
-                const profile = getProfile(student.id);
-                const scores = Object.values(profile.quiz_scores || {});
-                const avgScore = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 55;
-                const weakAreas = profile.weak_topics || [];
-                const interactions = profile.recent_interactions || [];
-                
-                allStudents.push({
-                    id: student.id,
-                    name: student.name,
-                    score: avgScore,
-                    progress: Math.min(100, Math.max(20, avgScore + Math.random() * 15)),
-                    weak: weakAreas.length > 0 ? weakAreas[0] : 'None identified',
-                    weakAreas: weakAreas,
-                    interactionCount: interactions.length,
-                    topicScores: profile.quiz_scores || {},
-                });
-                
-                totalScore += avgScore;
-                scoredCount++;
-                
-                // Aggregate topic performance
-                Object.entries(profile.quiz_scores || {}).forEach(([topic, score]) => {
-                    if (!topicScoreMap[topic]) {
-                        topicScoreMap[topic] = { total: 0, count: 0 };
-                    }
-                    topicScoreMap[topic].total += score;
-                    topicScoreMap[topic].count++;
-                });
-                
-                // Count weak topics
-                weakAreas.forEach((area) => {
-                    topicWeakCountMap[area] = (topicWeakCountMap[area] || 0) + 1;
-                });
-            } catch (e) {
-                // Skip on error
-            }
-        });
-        
-        const avgScore = scoredCount > 0 ? Math.round(totalScore / scoredCount) : 0;
-        
-        // Build progress trend (simulated weekly data)
-        const progressTrend = [
-            { week: 'Week 1', progress: 45 },
-            { week: 'Week 2', progress: 52 },
-            { week: 'Week 3', progress: 58 },
-            { week: 'Week 4', progress: 63 },
-            { week: 'Week 5', progress: 68 },
-            { week: 'Week 6', progress: avgScore },
-        ];
-        
-        // Build weak areas breakdown
-        const weakAreas = Object.entries(topicWeakCountMap)
-            .map(([topic, count]) => ({
-                topic: topic.charAt(0).toUpperCase() + topic.slice(1),
-                count,
-            }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 6);
-        
-        // Add generics if few weak areas
-        if (weakAreas.length < 3) {
-            weakAreas.push(
-                { topic: 'Advanced Topics', count: Math.ceil(allStudents.length / 3) },
-                { topic: 'Debugging', count: Math.ceil(allStudents.length / 4) }
-            );
-        }
-        
-        const analyticsData = {
-            overview: {
-                totalStudents: allStudents.length,
-                avgScore: avgScore,
-                activeProjects: Math.ceil(allStudents.length * 0.7),
-            },
-            students: allStudents,
-            progressTrend: progressTrend,
-            weakAreas: weakAreas,
-            topicPerformance: Object.entries(topicScoreMap).map(([topic, data]) => ({
-                topic: topic.charAt(0).toUpperCase() + topic.slice(1),
-                avgScore: Math.round(data.total / data.count),
-                studentCount: data.count,
-            })),
-        };
-        res.status(200).json(analyticsData);
     } catch (error) {
         res.status(500).json({ message: error.message });
     }

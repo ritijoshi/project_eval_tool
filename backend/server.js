@@ -9,6 +9,7 @@ const http = require('http');
 const { requestLogger } = require('./middleware/requestLogger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { getAllowedOrigins } = require('./config/services');
+const path = require('path');
 
 dotenv.config();
 
@@ -37,6 +38,7 @@ app.use(
     })
 );
 app.use(express.json({ limit: '2mb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(requestLogger);
 
 const globalLimiter = rateLimit({
@@ -93,6 +95,7 @@ app.use('/api/student', require('./routes/student'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/user', require('./routes/user'));
 
 app.use(notFoundHandler);
 app.use(errorHandler);

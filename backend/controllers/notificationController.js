@@ -1,14 +1,19 @@
 const Notification = require('../models/Notification');
+const { resolveCourseCode } = require('../utils/courseContext');
 
 // Get all unread notifications for a user
 exports.getNotifications = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { read, limit = 50, page = 1, type } = req.query;
+    const { read, limit = 50, page = 1, type, courseId } = req.query;
 
     let query = { recipient: userId };
     if (read !== undefined) query.read = read === 'true';
     if (type) query.type = type;
+    if (courseId) {
+      const resolved = await resolveCourseCode(courseId);
+      if (resolved) query.resourceId = resolved;
+    }
 
     const skip = (page - 1) * limit;
 
@@ -121,10 +126,15 @@ exports.deleteNotification = async (req, res) => {
 // Get unread count
 exports.getUnreadCount = async (req, res) => {
   try {
-    const count = await Notification.countDocuments({
-      recipient: req.user.id,
-      read: false,
-    });
+    const { courseId } = req.query;
+    const query = { recipient: req.user.id, read: false };
+
+    if (courseId) {
+      const resolved = await resolveCourseCode(courseId);
+      if (resolved) query.resourceId = resolved;
+    }
+
+    const count = await Notification.countDocuments(query);
 
     res.json({ unreadCount: count });
   } catch (err) {
