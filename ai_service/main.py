@@ -124,7 +124,7 @@ except ImportError as e:
 
 def get_vector_store():
     if not VECTORS_AVAILABLE: return None
-    embeddings = HuggingFaceEmbeddingsEmbeddings()
+    embeddings = HuggingFaceEmbeddings()
     if os.path.exists(FAISS_INDEX_PATH):
         return FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
     return None
@@ -731,6 +731,9 @@ async def upload_course_materials(
             processed_files += 1
             total_chunks += len(chunks)
 
+    except Exception as e:
+        print(f"[MaterialIngestion] CRITICAL ERROR during ingestion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
     finally:
         # Best-effort cleanup.
         try:

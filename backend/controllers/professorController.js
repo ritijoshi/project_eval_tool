@@ -115,15 +115,26 @@ const uploadMaterial = async (req, res) => {
             });
         });
 
+        console.log(`[MaterialIngestion] Sending materials to AI Service: ${pythonServiceUrl}`);
         const response = await axios.post(pythonServiceUrl, form, {
             headers: form.getHeaders(),
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
+            timeout: 300000, // 5 minutes
         });
 
+        console.log(`[MaterialIngestion] AI Service response code: ${response.status}`);
         return res.status(201).json(response.data);
     } catch (error) {
-        return res.status(500).json({ message: error.message || 'Upload failed' });
+        console.error(`[MaterialIngestion] FAILED to call AI service:`, error.message);
+        if (error.response) {
+            console.error(`[MaterialIngestion] Response error status:`, error.response.status);
+            console.error(`[MaterialIngestion] Response error data:`, JSON.stringify(error.response.data));
+            return res.status(error.response.status).json({
+                message: error.response.data?.message || error.response.data?.detail || 'AI Service failed'
+            });
+        }
+        return res.status(500).json({ message: error.message || 'Back-end upload handler failed' });
     }
 };
 
