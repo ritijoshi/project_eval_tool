@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Bot, User, Sparkles, Trash2 } from 'lucide-react';
+import { Send, Bot, User, Sparkles, Trash2, Mic, MicOff } from 'lucide-react';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
 import { useActiveCourse } from '../context/ActiveCourseContext';
@@ -10,7 +10,9 @@ const Chatbot = () => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const messagesEndRef = useRef(null);
+  const recognitionRef = useRef(null);
   const { activeCourseId, activeCourse } = useActiveCourse();
   const activeCourseKey = useMemo(() => activeCourse?.courseCode || '', [activeCourse]);
 
@@ -21,6 +23,52 @@ const Chatbot = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onresult = (event) => {
+        let transcript = event.results[0][0].transcript;
+        // Make sure transcript isn't undefined
+        if (transcript) {
+          sendMessageRef.current(transcript);
+        }
+      };
+      recognition.onerror = (event) => {
+        console.error("Speech recognition error", event.error);
+        if (event.error === 'not-allowed') {
+          alert("Microphone permission denied.");
+        }
+        setIsListening(false);
+      };
+      recognition.onend = () => setIsListening(false);
+
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    } else {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.start();
+        } catch (err) {
+          console.error("Could not start speech recognition", err);
+        }
+      } else {
+        alert("Your browser doesn't support speech recognition.");
+      }
+    }
+  };
 
   useEffect(() => {
     if (!activeCourseKey) return;
@@ -59,14 +107,16 @@ const Chatbot = () => {
     }
   };
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (!input.trim()) return;
+  const sendMessageData = async (textOverride = null) => {
+    const textToSend = textOverride !== null ? textOverride : input;
+    if (!textToSend.trim()) return;
     if (!activeCourseKey) return;
 
-    const userMessage = input;
+    const userMessage = textToSend;
     setMessages(prev => [...prev, { text: userMessage, sender: 'user' }]);
-    setInput('');
+    if (textOverride === null) {
+      setInput(''); // Only clear input if we were sending from the input box
+    }
     setLoading(true);
 
     try {
@@ -87,6 +137,16 @@ const Chatbot = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const sendMessageRef = useRef(sendMessageData);
+  useEffect(() => {
+    sendMessageRef.current = sendMessageData;
+  });
+
+  const handleSend = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    await sendMessageData();
   };
 
   return (
@@ -151,7 +211,17 @@ const Chatbot = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      <form className="chatgpt-compose" onSubmit={handleSend}>
+      <form className="chatgpt-compose" onSubmit={handleSend} style={{ position: 'relative' }}>
+        {isListening && (
+          <div style={{ position: 'absolute', top: '-25px', left: '15px', color: '#00B0FF', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <div className="typing-indicator-wrap" style={{ display: 'flex', alignItems: 'center', margin: 0, padding: 0 }}>
+              <div className="typing-dot" style={{ backgroundColor: '#00B0FF', width: '4px', height: '4px' }}></div>
+              <div className="typing-dot" style={{ backgroundColor: '#00B0FF', width: '4px', height: '4px' }}></div>
+              <div className="typing-dot" style={{ backgroundColor: '#00B0FF', width: '4px', height: '4px' }}></div>
+            </div>
+            Listening...
+          </div>
+        )}
         <input
           type="text"
           className="chatgpt-input"
@@ -160,9 +230,28 @@ const Chatbot = () => {
           onChange={(e) => setInput(e.target.value)}
           disabled={!activeCourseKey}
         />
-        <button type="submit" disabled={loading || !activeCourseKey || !input.trim()} className="chatgpt-send">
-          <Send size={16} />
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button 
+            type="button" 
+            onClick={toggleListening}
+            disabled={!activeCourseKey}
+            className={`chatgpt-send ${isListening ? 'listening-active' : ''}`}
+            style={{ 
+              ...(isListening ? { 
+                backgroundColor: 'rgba(255, 107, 107, 0.2)', 
+                color: '#FF6B6B',
+                animation: 'pulse 1.5s infinite' 
+              } : {}),
+              transition: 'all 0.3s ease'
+            }}
+            title={isListening ? "Stop listening" : "Start voice input"}
+          >
+            {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+          </button>
+          <button type="submit" disabled={loading || !activeCourseKey || !input.trim()} className="chatgpt-send">
+            <Send size={16} />
+          </button>
+        </div>
       </form>
     </div>
   );
