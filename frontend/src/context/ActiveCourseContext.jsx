@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 const ActiveCourseContext = createContext(null);
 
@@ -11,6 +12,9 @@ export const ActiveCourseProvider = ({ children }) => {
   const [loading, setLoading] = useState(false);
   const [activeCourseId, setActiveCourseId] = useState('');
   const [role, setRole] = useState(localStorage.getItem('role') || 'user');
+  const [activeRubricText, setActiveRubricText] = useState('');
+  const [rubricLoading, setRubricLoading] = useState(false);
+  const { on, off } = useWebSocket();
 
   const storageKey = useMemo(() => buildStorageKey(role), [role]);
   const lastKey = useMemo(() => buildStorageKey(role, ':last'), [role]);
@@ -51,20 +55,31 @@ export const ActiveCourseProvider = ({ children }) => {
       const records = Array.isArray(res.data?.records) ? res.data.records : [];
       setCourses(records);
 
+      const isValidCourseId = (value) => {
+        if (!value) return false;
+        if (value === 'all') return true;
+        return records.some((course) => course._id === value);
+      };
+
       const stored = localStorage.getItem(storageKey);
       const backendActive = activeRes?.data?.courseId || null;
-      if (stored) {
+
+      if (stored && isValidCourseId(stored)) {
         setActiveCourseId(stored);
         return;
       }
+      if (stored && !isValidCourseId(stored)) {
+        localStorage.removeItem(storageKey);
+      }
 
-      if (backendActive && records.some((course) => course._id === backendActive)) {
+      if (backendActive && isValidCourseId(backendActive)) {
         setActiveCourseId(backendActive);
         return;
       }
 
       const last = localStorage.getItem(lastKey);
-      if (last && records.some((course) => course._id === last)) {
+
+      if (last && isValidCourseId(last)) {
         setActiveCourseId(last);
         return;
       }
@@ -76,17 +91,87 @@ export const ActiveCourseProvider = ({ children }) => {
 
       if (records.length > 0) {
         setActiveCourseId(records[0]._id);
+        return;
       }
+
+      setActiveCourseId('');
     } catch (err) {
       setCourses([]);
+      setActiveCourseId('');
     } finally {
       setLoading(false);
     }
   }, [role, storageKey, lastKey]);
 
+  const fetchActiveRubric = useCallback(
+    async (courseId) => {
+      const token = localStorage.getItem('token');
+      const currentRole = localStorage.getItem('role') || 'user';
+
+      if (!token || currentRole !== 'student') {
+        setActiveRubricText('');
+        return;
+      }
+
+      if (!courseId || courseId === 'all') {
+        setActiveRubricText('');
+        return;
+      }
+
+      try {
+        setRubricLoading(true);
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        const res = await axios.get(`${API_BASE}/api/student/rubric?courseId=${courseId}`, config);
+        setActiveRubricText(String(res.data?.rubricText || ''));
+      } catch (err) {
+        setActiveRubricText('');
+      } finally {
+        setRubricLoading(false);
+      }
+    },
+    [setActiveRubricText]
+  );
+
   useEffect(() => {
     fetchCourses();
   }, [fetchCourses]);
+
+  useEffect(() => {
+    // Keep rubric in sync with the currently active course.
+    fetchActiveRubric(activeCourseId);
+  }, [activeCourseId, fetchActiveRubric]);
+
+  useEffect(() => {
+    const handleAuthChanged = () => {
+      fetchCourses();
+    };
+    window.addEventListener('auth-changed', handleAuthChanged);
+    return () => window.removeEventListener('auth-changed', handleAuthChanged);
+  }, [fetchCourses]);
+
+  useEffect(() => {
+    const handleCoursesUpdated = () => {
+      fetchCourses();
+    };
+
+    on('courses-updated', handleCoursesUpdated);
+    return () => {
+      off('courses-updated', handleCoursesUpdated);
+    };
+  }, [on, off, fetchCourses]);
+
+  useEffect(() => {
+    const handleRubricUpdated = (data) => {
+      if (!data?.courseId) return;
+      if (String(data.courseId) !== String(activeCourseId)) return;
+      fetchActiveRubric(activeCourseId);
+    };
+
+    on('rubric-updated', handleRubricUpdated);
+    return () => {
+      off('rubric-updated', handleRubricUpdated);
+    };
+  }, [on, off, activeCourseId, fetchActiveRubric]);
 
   useEffect(() => {
     if (activeCourseId) {
@@ -123,9 +208,12 @@ export const ActiveCourseProvider = ({ children }) => {
       setActiveCourseId,
       activeCourse,
       refreshCourses: fetchCourses,
+      activeRubricText,
+      rubricLoading,
+      refreshRubric: () => fetchActiveRubric(activeCourseId),
       isAllCourses: activeCourseId === 'all',
     }),
-    [courses, loading, activeCourseId, activeCourse, fetchCourses]
+    [courses, loading, activeCourseId, activeCourse, fetchCourses, activeRubricText, rubricLoading, fetchActiveRubric]
   );
 
   return <ActiveCourseContext.Provider value={value}>{children}</ActiveCourseContext.Provider>;

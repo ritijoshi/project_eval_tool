@@ -152,6 +152,15 @@ const defineRubric = async (req, res) => {
             return res.status(400).json({ message: 'course_key is required' });
         }
 
+        const courseCode = String(course_key || '').trim().toUpperCase();
+        const course = await Course.findOne({ courseCode }).select('_id professor students courseCode').lean();
+        if (!course) {
+            return res.status(404).json({ message: 'Course not found for provided course_key' });
+        }
+        if (String(course.professor) !== String(professorId)) {
+            return res.status(403).json({ message: 'Not authorized to define rubric for this course' });
+        }
+
         if (!String(name || '').trim()) {
             return res.status(400).json({ message: 'Rubric name is required' });
         }
@@ -170,9 +179,22 @@ const defineRubric = async (req, res) => {
             isActive: true,
         });
 
+        const io = req.app?.get('io');
+        if (io && Array.isArray(course.students)) {
+            course.students.forEach((studentId) => {
+                io.to(`user:${studentId}`).emit('rubric-updated', {
+                    courseId: String(course._id),
+                    courseKey,
+                    rubricId: String(rubric._id),
+                    timestamp: new Date().toISOString(),
+                });
+            });
+        }
+
         res.status(201).json({
             message: 'Rubric saved successfully.',
             rubric,
+            courseId: String(course._id),
         });
     } catch (error) {
         res.status(500).json({ message: error.message });

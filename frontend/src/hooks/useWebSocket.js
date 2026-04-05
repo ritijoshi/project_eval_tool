@@ -10,10 +10,40 @@ export const useWebSocket = () => {
   const [isConnected, setIsConnected] = useState(false);
   const socketRef = useRef(null);
   const eventsRef = useRef({});
+  const [token, setToken] = useState(() => localStorage.getItem('token'));
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (!token) return;
+    const syncToken = () => {
+      setToken(localStorage.getItem('token'));
+    };
+
+    const handleStorage = (e) => {
+      if (e.key === 'token' || e.key === 'role' || e.key === 'user') {
+        syncToken();
+      }
+    };
+
+    // Same-tab updates (we dispatch this after login/logout)
+    window.addEventListener('auth-changed', syncToken);
+
+    // Cross-tab updates
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener('auth-changed', syncToken);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+      setIsConnected(false);
+      return;
+    }
 
     const socketUrl = API_BASE;
 
@@ -23,7 +53,16 @@ export const useWebSocket = () => {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: Infinity,
+    });
+
+    // Attach any listeners that were registered before the socket existed.
+    Object.entries(eventsRef.current).forEach(([event, callbacks]) => {
+      (callbacks || []).forEach((cb) => {
+        if (typeof cb === 'function') {
+          socketRef.current.on(event, cb);
+        }
+      });
     });
 
     // Connection handlers
@@ -44,28 +83,31 @@ export const useWebSocket = () => {
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
+        socketRef.current = null;
       }
     };
-  }, []);
+  }, [token]);
 
   const on = useCallback((event, callback) => {
-    if (socketRef.current) {
-      socketRef.current.on(event, callback);
-      if (!eventsRef.current[event]) {
-        eventsRef.current[event] = [];
-      }
+    if (!eventsRef.current[event]) {
+      eventsRef.current[event] = [];
+    }
+    if (callback && !eventsRef.current[event].includes(callback)) {
       eventsRef.current[event].push(callback);
+    }
+
+    if (socketRef.current && typeof callback === 'function') {
+      socketRef.current.on(event, callback);
     }
   }, []);
 
   const off = useCallback((event, callback) => {
     if (socketRef.current) {
       socketRef.current.off(event, callback);
-      if (eventsRef.current[event]) {
-        eventsRef.current[event] = eventsRef.current[event].filter(
-          (cb) => cb !== callback
-        );
-      }
+    }
+
+    if (eventsRef.current[event]) {
+      eventsRef.current[event] = eventsRef.current[event].filter((cb) => cb !== callback);
     }
   }, []);
 
@@ -88,26 +130,29 @@ export const useWebSocket = () => {
  * Hook for listening to feedback updates
  */
 export const useFeedbackUpdates = (feedbackId, onFeedbackReviewed, onStudentResponded) => {
-  const { on, off, emit } = useWebSocket();
+  const { on, off } = useWebSocket();
 
   useEffect(() => {
     if (!feedbackId) return;
 
-    on('feedback-reviewed', (data) => {
+    const handleReviewed = (data) => {
       if (data.feedbackId === feedbackId && onFeedbackReviewed) {
         onFeedbackReviewed(data);
       }
-    });
+    };
 
-    on('student-responded', (data) => {
+    const handleResponded = (data) => {
       if (data.feedbackId === feedbackId && onStudentResponded) {
         onStudentResponded(data);
       }
-    });
+    };
+
+    on('feedback-reviewed', handleReviewed);
+    on('student-responded', handleResponded);
 
     return () => {
-      off('feedback-reviewed', onFeedbackReviewed);
-      off('student-responded', onStudentResponded);
+      off('feedback-reviewed', handleReviewed);
+      off('student-responded', handleResponded);
     };
   }, [feedbackId, on, off, onFeedbackReviewed, onStudentResponded]);
 };
@@ -143,28 +188,31 @@ export const useCourseChat = (courseKey) => {
   useEffect(() => {
     if (!courseKey) return;
 
+    const handleChatMessage = (data) => {
+      setMessages((prev) => [...prev, data]);
+    };
+
+    const handleTyping = (data) => {
+      console.log(`${data.userId} is typing...`);
+    };
+
+    const handleStopTyping = (data) => {
+      console.log(`${data.userId} stopped typing`);
+    };
+
     // Join course room
     emit('join-course', courseKey);
 
     // Listen for new messages
-    on('chat-message', (data) => {
-      setMessages((prev) => [...prev, data]);
-    });
-
-    // Listen for user typing
-    on('user-typing', (data) => {
-      console.log(`${data.userId} is typing...`);
-    });
-
-    on('user-stop-typing', (data) => {
-      console.log(`${data.userId} stopped typing`);
-    });
+    on('chat-message', handleChatMessage);
+    on('user-typing', handleTyping);
+    on('user-stop-typing', handleStopTyping);
 
     return () => {
       emit('leave-course', courseKey);
-      off('chat-message', null);
-      off('user-typing', null);
-      off('user-stop-typing', null);
+      off('chat-message', handleChatMessage);
+      off('user-typing', handleTyping);
+      off('user-stop-typing', handleStopTyping);
     };
   }, [courseKey, emit, on, off]);
 
@@ -203,25 +251,29 @@ export const usePresence = (courseKey) => {
   useEffect(() => {
     if (!courseKey || !isConnected) return;
 
-    on('user-online', (data) => {
+    const handleOnline = (data) => {
       console.log(`User ${data.userId} came online`);
-    });
+    };
 
-    on('user-offline', (data) => {
+    const handleOffline = (data) => {
       console.log(`User ${data.userId} went offline`);
-    });
+    };
 
-    on('active-users', (data) => {
+    const handleActiveUsers = (data) => {
       setActiveUsers(data.users);
-    });
+    };
+
+    on('user-online', handleOnline);
+    on('user-offline', handleOffline);
+    on('active-users', handleActiveUsers);
 
     // Request active users on mount
     emit('request-active-users', courseKey);
 
     return () => {
-      off('user-online', null);
-      off('user-offline', null);
-      off('active-users', null);
+      off('user-online', handleOnline);
+      off('user-offline', handleOffline);
+      off('active-users', handleActiveUsers);
     };
   }, [courseKey, isConnected, emit, on, off]);
 

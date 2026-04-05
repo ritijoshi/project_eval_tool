@@ -270,6 +270,24 @@ class WeeklyUpdateRequest(BaseModel):
     revised_expectations: List[str] = []
     update_text: str = ""
 
+class QuizQuestion(BaseModel):
+    questionText: str
+    options: List[str]
+    correctAnswer: int
+    explanation: str = ""
+    topic: str = ""
+
+class QuizGenerateRequest(BaseModel):
+    course_key: str
+    count: int = 10
+    difficulty: str = "medium"
+    topics: List[str] = []
+    instructions: str = ""
+
+class QuizGenerateResponse(BaseModel):
+    course_key: str
+    questions: List[QuizQuestion]
+
 def normalize_course_key(course_key: str) -> str:
     s = str(course_key).strip().lower()
     s = re.sub(r"[^a-z0-9\\-_]+", "-", s)
@@ -484,6 +502,212 @@ def retrieve_course_context(course_key: str, query: str, k: int = 4) -> List[str
         return top
     except Exception:
         return []
+
+def _extract_json_array(text: str) -> Optional[List[Dict]]:
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict) and isinstance(obj.get("questions"), list):
+            return obj.get("questions")
+    except Exception:
+        pass
+
+    # Best-effort: pull the first JSON array from the response
+    try:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start : end + 1]
+            obj = json.loads(candidate)
+            if isinstance(obj, list):
+                return obj
+    except Exception:
+        pass
+    return None
+
+def fallback_generate_quiz(course_key: str, context_chunks: List[str], count: int, topics: List[str]) -> QuizGenerateResponse:
+    # Deterministic, editable quiz scaffold when LLM is unavailable.
+    joined = "\n\n".join([c for c in (context_chunks or []) if c])
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", joined) if s.strip()]
+    if not sentences:
+        sentences = [joined[:250]] if joined else ["Course material context is not available."]
+
+    def mutate(s: str, salt: int) -> str:
+        # Produce a slightly altered distractor from the same sentence.
+        words = s.split()
+        if len(words) < 6:
+            return s + " (paraphrase)"
+        drop = max(1, min(3, (salt % 3) + 1))
+        return " ".join(words[:-drop]) + " ..."
+
+    questions: List[QuizQuestion] = []
+    for i in range(max(1, min(25, int(count or 10)))):
+        base = sentences[i % len(sentences)]
+        base = base[:220]
+        correct = base
+        opts = [
+            correct,
+            mutate(base, i + 1),
+            mutate(base, i + 2),
+            mutate(base, i + 3),
+        ]
+        topic = topics[i % len(topics)] if topics else ""
+        questions.append(QuizQuestion(
+            questionText=f"Which statement is supported by the course material?",
+            options=opts,
+            correctAnswer=0,
+            explanation="Correct option is taken directly from the course material excerpt (fallback mode).",
+            topic=topic,
+        ))
+
+    return QuizGenerateResponse(course_key=course_key, questions=questions)
+
+def fallback_generate_quiz_from_topics(course_key: str, count: int, topics: List[str], difficulty: str, instructions: str) -> QuizGenerateResponse:
+    # Deterministic quiz generation from topics only (no course materials required).
+    # This keeps the UI functional even when embeddings/materials are absent.
+    safe_topics = [t for t in (topics or []) if str(t).strip()]
+    if not safe_topics:
+        safe_topics = ["core concepts"]
+
+    count = max(1, min(25, int(count or 10)))
+    difficulty = str(difficulty or "medium").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        difficulty = "medium"
+
+    # Template bank (kept generic to avoid claiming course-specific facts)
+    templates = [
+        ("Which option best describes '{topic}'?", "definition"),
+        ("Which is a common use-case for '{topic}'?", "use_case"),
+        ("Which statement about '{topic}' is MOST accurate?", "accuracy"),
+        ("Which choice is an example related to '{topic}'?", "example"),
+    ]
+
+    def opts_for(tag: str, topic: str) -> List[str]:
+        topic_clean = str(topic).strip()
+        generic_wrong = [
+            f"An unrelated concept not tied to {topic_clean}",
+            f"A definition that contradicts the idea of {topic_clean}",
+            f"A statement that is too broad to specifically describe {topic_clean}",
+        ]
+
+        if tag == "definition":
+            correct = f"A concept or technique commonly discussed under {topic_clean}"
+        elif tag == "use_case":
+            correct = f"Applying {topic_clean} to solve a practical problem in its domain"
+        elif tag == "accuracy":
+            correct = f"{topic_clean} has trade-offs and should be applied with context"
+        else:
+            correct = f"A scenario where {topic_clean} is directly relevant"
+
+        return [correct, generic_wrong[0], generic_wrong[1], generic_wrong[2]]
+
+    questions: List[QuizQuestion] = []
+    for i in range(count):
+        topic = safe_topics[i % len(safe_topics)]
+        prompt, tag = templates[i % len(templates)]
+        qtext = prompt.format(topic=topic)
+        options = opts_for(tag, topic)
+        explanation = (
+            f"This question was generated from the topic '{topic}'. "
+            f"{('Difficulty: ' + difficulty + '. ') if difficulty else ''}"
+            f"{('Instruction considered: ' + instructions[:140]) if instructions else ''}"
+        ).strip()
+        questions.append(
+            QuizQuestion(
+                questionText=qtext,
+                options=options,
+                correctAnswer=0,
+                explanation=explanation,
+                topic=str(topic),
+            )
+        )
+
+    return QuizGenerateResponse(course_key=course_key, questions=questions)
+
+def generate_quiz_core(req: QuizGenerateRequest) -> QuizGenerateResponse:
+    course_key = normalize_course_key(req.course_key)
+    count = max(1, min(25, int(req.count or 10)))
+    difficulty = str(req.difficulty or "medium").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        difficulty = "medium"
+    topics = [str(t).strip() for t in (req.topics or []) if str(t).strip()]
+    instructions = str(req.instructions or "").strip()
+
+    query = " ".join([
+        "Generate multiple-choice practice questions",
+        f"difficulty {difficulty}",
+        ("topics: " + ", ".join(topics)) if topics else "",
+        instructions,
+    ]).strip()
+
+    context_chunks = retrieve_course_context(course_key, query, k=6)
+    context_text = "\n\n---\n\n".join(context_chunks).strip()
+
+    # If there's no course context, still generate from topics/instructions.
+    if not context_text:
+        if not groq_llm_enabled():
+            return fallback_generate_quiz_from_topics(course_key, count, topics, difficulty, instructions)
+    else:
+        if not groq_llm_enabled():
+            return fallback_generate_quiz(course_key, context_chunks, count, topics)
+
+    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.35)
+    parser = JsonOutputParser(pydantic_object=QuizGenerateResponse)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You generate multiple-choice quizzes.\n"
+            "If course excerpts are provided, prefer them; otherwise generate from the provided topics and general knowledge.\n"
+            "Return ONLY valid JSON matching the schema below. Do not wrap in markdown.\n\n"
+            "Course key: {course_key}\n"
+            "Difficulty: {difficulty}\n"
+            "Requested count: {count}\n"
+            "Topics (optional): {topics}\n"
+            "Extra instructions (optional): {instructions}\n\n"
+            "Course excerpts (may be empty):\n{context}\n\n"
+            "Rules:\n"
+            "- Output must be JSON for schema: {format_instructions}\n"
+            "- Provide exactly {count} questions.\n"
+            "- Each question must have 4 options.\n"
+            "- correctAnswer is 0-based index and must be within options.\n"
+            "- Include a short explanation.\n"
+            "- Avoid repeating the same concept verbatim across questions."
+            "\n\nSafety/quality rules when course excerpts are empty:\n"
+            "- Use only high-confidence, widely accepted definitions and concepts.\n"
+            "- Avoid niche vendor-specific facts or tricky edge-case claims.\n"
+            "- Keep explanations short and non-controversial.\n"
+            "- Prefer conceptual questions grounded directly in the provided topics."
+        )),
+        ("human", "Generate the quiz now.")
+    ])
+
+    chain = prompt | llm | parser
+    result = chain.invoke({
+        "course_key": course_key,
+        "difficulty": difficulty,
+        "count": count,
+        "topics": topics,
+        "instructions": instructions,
+        "context": context_text,
+        "format_instructions": parser.get_format_instructions(),
+    })
+
+    try:
+        obj = QuizGenerateResponse(**result)
+    except Exception:
+        # If parser returned malformed data, try to salvage from raw text
+        raw = json.dumps(result) if not isinstance(result, str) else result
+        arr = _extract_json_array(raw) or []
+        obj = QuizGenerateResponse(course_key=course_key, questions=[QuizQuestion(**q) for q in arr])
+
+    # Normalize length
+    obj.questions = (obj.questions or [])[:count]
+    return obj
+
+@app.post("/course/generate-quiz", response_model=QuizGenerateResponse)
+async def course_generate_quiz(req: QuizGenerateRequest):
+    return generate_quiz_core(req)
 
 def parse_rubric_criteria(rubric_text: str) -> List[Dict[str, int]]:
     rubric = str(rubric_text or "").strip()

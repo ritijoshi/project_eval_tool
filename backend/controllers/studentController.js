@@ -1,8 +1,11 @@
 // Student Controller mimicking real DB / AI behavior
 
 const axios = require('axios');
+const mongoose = require('mongoose');
 const FormData = require('form-data');
 const Feedback = require('../models/Feedback');
+const Course = require('../models/Course');
+const Rubric = require('../models/Rubric');
 const User = require('../models/User');
 const { getProfile, updateQuizScore, addInteraction, addWeakTopics } = require('../utils/studentProfileStore');
 const Proposal = require('../models/Proposal');
@@ -86,11 +89,27 @@ const getLearningPath = async (req, res) => {
     try {
         const userId = req.user?._id || 'anonymous';
         const courseId = req.query?.courseId;
-        const resolvedCourseKey = courseId ? await resolveCourseCode(courseId) : null;
+
+        let resolvedCourseKey = null;
+        let normalizedCourseId = null;
+
+        if (courseId && courseId !== 'all') {
+            if (!mongoose.Types.ObjectId.isValid(String(courseId))) {
+                return res.status(400).json({ message: 'Invalid courseId' });
+            }
+
+            const enrolled = await Course.exists({ _id: courseId, students: userId });
+            if (!enrolled) {
+                return res.status(403).json({ message: 'Not enrolled in this course' });
+            }
+
+            normalizedCourseId = String(courseId);
+            resolvedCourseKey = await resolveCourseCode(courseId);
+        }
         const profile = getProfile(userId);
         const studentStats = {
             student_id: userId,
-            course_id: courseId || null,
+            course_id: normalizedCourseId,
             course_key: resolvedCourseKey || null,
             quiz_scores: profile.quiz_scores || {},
             weak_topics: profile.weak_topics || [],
@@ -347,6 +366,71 @@ const updatePersonalizationInputs = async (req, res) => {
     }
 };
 
+const formatRubricAsText = (rubric) => {
+    if (!rubric) return '';
+    const criteria = Array.isArray(rubric.criteria) ? rubric.criteria : [];
+    if (!criteria.length) return '';
+
+    return criteria
+        .map((criterion, idx) => {
+            const title = String(criterion.title || '').trim();
+            const weight = Number(criterion.weight);
+            const desc = String(criterion.description || '').trim();
+            const weightLabel = Number.isFinite(weight) ? ` (${weight}%)` : '';
+            const descLabel = desc ? ` - ${desc}` : '';
+            return `${idx + 1}. ${title}${weightLabel}${descLabel}`.trim();
+        })
+        .filter(Boolean)
+        .join('\n');
+};
+
+const getActiveRubricForCourse = async (req, res) => {
+    try {
+        const studentId = req.user?._id;
+        const courseId = req.query?.courseId;
+
+        if (!studentId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!courseId || courseId === 'all') {
+            return res.status(400).json({ message: 'courseId is required' });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(String(courseId))) {
+            return res.status(400).json({ message: 'Invalid courseId' });
+        }
+
+        const course = await Course.findOne({ _id: courseId, students: studentId })
+            .select('_id courseCode professor')
+            .lean();
+        if (!course) {
+            return res.status(403).json({ message: 'Not enrolled in this course' });
+        }
+
+        const courseKey = String(course.courseCode || '').trim().toLowerCase();
+        const professorId = course.professor;
+
+        const rubric = await Rubric.findOne({
+            professor: professorId,
+            courseKey,
+            isActive: true,
+        })
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return res.status(200).json({
+            courseId: String(course._id),
+            courseKey,
+            rubric: rubric || null,
+            rubricText: rubric ? formatRubricAsText(rubric) : '',
+            updatedAt: rubric?.updatedAt || null,
+        });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to load rubric' });
+    }
+};
+
 module.exports = {
     getLearningPath,
     getLeaderboard,
@@ -354,4 +438,5 @@ module.exports = {
     evaluateProject,
     evaluateProjectFiles,
     updatePersonalizationInputs,
+    getActiveRubricForCourse,
 };

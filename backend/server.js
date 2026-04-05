@@ -96,6 +96,7 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/user', require('./routes/user'));
+app.use('/api', require('./routes/tests'));
 
 app.use(notFoundHandler);
 app.use(errorHandler);

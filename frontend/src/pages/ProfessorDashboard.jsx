@@ -9,9 +9,11 @@ import EvaluationReviewer from '../components/EvaluationReviewer';
 import { API_BASE } from '../config/api';
 import CourseSwitcher from '../components/CourseSwitcher';
 import { useActiveCourse } from '../context/ActiveCourseContext';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 const ProfessorDashboard = () => {
   const navigate = useNavigate();
+  const { on, off } = useWebSocket();
   const [analytics, setAnalytics] = useState(null);
   const [filterTopic, setFilterTopic] = useState('All');
   const [filterStudent, setFilterStudent] = useState('All');
@@ -58,6 +60,24 @@ const ProfessorDashboard = () => {
   const [assignmentSubmissionsLoading, setAssignmentSubmissionsLoading] = useState({});
   const [expandedAssignmentId, setExpandedAssignmentId] = useState('');
   const [gradeInputs, setGradeInputs] = useState({});
+
+  const [practiceTests, setPracticeTests] = useState([]);
+  const [practiceTestsLoading, setPracticeTestsLoading] = useState(false);
+  const [practiceTestForm, setPracticeTestForm] = useState({
+    title: '',
+    topics: '',
+    difficulty: 'medium',
+  });
+  const [practiceQuestions, setPracticeQuestions] = useState([]);
+  const [practiceGenerate, setPracticeGenerate] = useState({ count: 10, instructions: '' });
+  const [practiceGenerating, setPracticeGenerating] = useState(false);
+  const [practiceTestMessage, setPracticeTestMessage] = useState('');
+  const [practiceResults, setPracticeResults] = useState([]);
+  const [practiceResultsLoading, setPracticeResultsLoading] = useState(false);
+  const [showPracticeStats, setShowPracticeStats] = useState(false);
+  const [practiceLeaderboard, setPracticeLeaderboard] = useState([]);
+  const [practiceLeaderboardLoading, setPracticeLeaderboardLoading] = useState(false);
+  const [practiceLeaderboardTestId, setPracticeLeaderboardTestId] = useState('');
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') || 'dark';
@@ -117,8 +137,48 @@ const ProfessorDashboard = () => {
   useEffect(() => {
     if (activeTab === 'courses') {
       fetchAssignments();
+      fetchPracticeTests();
+      fetchPracticeResults();
     }
   }, [activeTab, activeCourseId]);
+
+  useEffect(() => {
+    const handlePracticeUpdated = (data) => {
+      if (!data) return;
+      if (activeTab !== 'courses') return;
+      if (!activeCourseId || activeCourseId === 'all') return;
+      if (data.courseId && String(data.courseId) !== String(activeCourseId)) return;
+
+      if (data.kind === 'test-created') {
+        fetchPracticeTests();
+        return;
+      }
+
+      fetchPracticeResults();
+      if (showPracticeStats) fetchPracticeLeaderboard();
+    };
+
+    on('practice-updated', handlePracticeUpdated);
+    return () => {
+      off('practice-updated', handlePracticeUpdated);
+    };
+  }, [on, off, activeTab, activeCourseId, showPracticeStats]);
+
+  useEffect(() => {
+    if (!showPracticeStats) return;
+    if (!activeCourseId || activeCourseId === 'all') return;
+
+    if (!practiceLeaderboardTestId && Array.isArray(practiceTests) && practiceTests.length > 0) {
+      setPracticeLeaderboardTestId(practiceTests[0]._id);
+    }
+  }, [showPracticeStats, activeCourseId, practiceLeaderboardTestId, practiceTests]);
+
+  useEffect(() => {
+    if (!showPracticeStats) return;
+    if (!activeCourseId || activeCourseId === 'all') return;
+    if (!practiceLeaderboardTestId) return;
+    fetchPracticeLeaderboard();
+  }, [showPracticeStats, activeCourseId, practiceLeaderboardTestId]);
 
   const fetchCourses = async () => {
     try {
@@ -146,6 +206,275 @@ const ProfessorDashboard = () => {
       setAssignments([]);
     } finally {
       setAssignmentsLoading(false);
+    }
+  };
+
+  const fetchPracticeTests = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeTests([]);
+      return;
+    }
+
+    try {
+      setPracticeTestsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/tests?courseId=${activeCourseId}`, config);
+      setPracticeTests(Array.isArray(res.data?.tests) ? res.data.tests : []);
+    } catch (err) {
+      setPracticeTests([]);
+    } finally {
+      setPracticeTestsLoading(false);
+    }
+  };
+
+  const validatePracticeQuestions = (questions) => {
+    const list = Array.isArray(questions) ? questions : [];
+    if (list.length === 0) return 'Generate questions first.';
+
+    for (let i = 0; i < list.length; i += 1) {
+      const q = list[i] || {};
+      const questionText = String(q.questionText || '').trim();
+      const options = Array.isArray(q.options) ? q.options.map((o) => String(o ?? '').trim()).filter(Boolean) : [];
+      const correctAnswer = Number(q.correctAnswer);
+
+      if (!questionText) return `Question ${i + 1}: question text is required.`;
+      if (options.length < 2) return `Question ${i + 1}: add at least 2 options.`;
+      if (!Number.isInteger(correctAnswer) || correctAnswer < 0 || correctAnswer >= options.length) {
+        return `Question ${i + 1}: choose a valid correct option.`;
+      }
+    }
+
+    return '';
+  };
+
+  const normalizePracticeQuestionsForSubmit = (questions) => {
+    const list = Array.isArray(questions) ? questions : [];
+
+    return list.map((q) => {
+      const rawOptions = Array.isArray(q?.options) ? q.options.map((o) => String(o ?? '').trim()) : [];
+      const indexMap = new Map();
+      const normalizedOptions = [];
+
+      rawOptions.forEach((opt, oldIndex) => {
+        if (!opt) {
+          indexMap.set(oldIndex, null);
+          return;
+        }
+        indexMap.set(oldIndex, normalizedOptions.length);
+        normalizedOptions.push(opt);
+      });
+
+      const oldCorrect = Number(q?.correctAnswer);
+      const mappedCorrect = Number.isInteger(oldCorrect) ? indexMap.get(oldCorrect) : null;
+
+      return {
+        questionText: String(q?.questionText || '').trim(),
+        options: normalizedOptions,
+        correctAnswer: mappedCorrect === null || mappedCorrect === undefined ? -1 : Number(mappedCorrect),
+        explanation: String(q?.explanation || ''),
+        topic: String(q?.topic || ''),
+      };
+    });
+  };
+
+  const updatePracticeQuestion = (index, patch) => {
+    setPracticeQuestions((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (index < 0 || index >= list.length) return prev;
+      list[index] = { ...(list[index] || {}), ...(patch || {}) };
+      return list;
+    });
+  };
+
+  const updatePracticeOption = (questionIndex, optionIndex, value) => {
+    setPracticeQuestions((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      const q = list[questionIndex];
+      if (!q) return prev;
+      const options = Array.isArray(q.options) ? [...q.options] : [];
+      while (options.length <= optionIndex) options.push('');
+      options[optionIndex] = value;
+      list[questionIndex] = { ...q, options };
+      return list;
+    });
+  };
+
+  const createPracticeTest = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeTestMessage('Select a course before creating a practice test.');
+      return;
+    }
+
+    if (!practiceTestForm.title.trim()) {
+      setPracticeTestMessage('Title is required.');
+      return;
+    }
+
+    const topics = practiceTestForm.topics
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    if (topics.length === 0) {
+      setPracticeTestMessage('Enter syllabus topics (comma-separated) so the agent can generate questions.');
+      return;
+    }
+
+    // If the professor hasn't generated questions yet, do that first (and let them edit).
+    if (!Array.isArray(practiceQuestions) || practiceQuestions.length === 0) {
+      await generatePracticeQuestionsWithAi();
+      return;
+    }
+
+    const questionsPayload = normalizePracticeQuestionsForSubmit(practiceQuestions);
+    const validationError = validatePracticeQuestions(questionsPayload);
+    if (validationError) {
+      setPracticeTestMessage(validationError);
+      return;
+    }
+
+    try {
+      setPracticeTestMessage('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+
+      await axios.post(
+        `${API_BASE}/api/tests`,
+        {
+          courseId: activeCourseId,
+          title: practiceTestForm.title,
+          topics,
+          difficulty: practiceTestForm.difficulty,
+          createdBy: 'professor',
+          questions: questionsPayload,
+        },
+        config
+      );
+
+      setPracticeTestForm({ title: '', topics: '', difficulty: 'medium' });
+      setPracticeQuestions([]);
+      setPracticeTestMessage('Practice test created.');
+      fetchPracticeTests();
+    } catch (err) {
+      setPracticeTestMessage(err.response?.data?.message || 'Failed to create practice test.');
+    }
+  };
+
+  const generatePracticeQuestionsWithAi = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeTestMessage('Select a course before generating questions.');
+      return;
+    }
+
+    try {
+      setPracticeGenerating(true);
+      setPracticeTestMessage('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+
+      const topics = practiceTestForm.topics
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      if (topics.length === 0) {
+        setPracticeTestMessage('Enter syllabus topics (comma-separated) before generating.');
+        return;
+      }
+
+      const res = await axios.post(
+        `${API_BASE}/api/tests/generate`,
+        {
+          courseId: activeCourseId,
+          count: Number(practiceGenerate.count) || 10,
+          difficulty: practiceTestForm.difficulty,
+          topics,
+          instructions: practiceGenerate.instructions,
+        },
+        config
+      );
+
+      const questions = Array.isArray(res.data?.questions) ? res.data.questions : [];
+      if (!questions.length) {
+        setPracticeTestMessage('AI returned no questions. Upload more materials or adjust instructions.');
+        return;
+      }
+
+      const normalized = questions.map((q) => {
+        const opts = Array.isArray(q?.options) ? [...q.options] : [];
+        while (opts.length < 4) opts.push('');
+        return {
+          questionText: q?.questionText || '',
+          options: opts,
+          correctAnswer: Number.isInteger(Number(q?.correctAnswer)) ? Number(q.correctAnswer) : 0,
+          explanation: q?.explanation || '',
+          topic: q?.topic || '',
+        };
+      });
+
+      setPracticeQuestions(normalized);
+      if (!practiceTestForm.title.trim()) {
+        setPracticeTestForm((prev) => ({ ...prev, title: `Practice Quiz (${practiceTestForm.difficulty})` }));
+      }
+      setPracticeTestMessage('Generated questions loaded. Review/edit and click “Create Practice Test” to upload.');
+    } catch (err) {
+      setPracticeTestMessage(
+        err.response?.data?.message ||
+          'Failed to generate questions. Ensure AI service is running and course materials are uploaded.'
+      );
+    } finally {
+      setPracticeGenerating(false);
+    }
+  };
+
+  const fetchPracticeResults = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeResults([]);
+      return;
+    }
+
+    try {
+      setPracticeResultsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/results?courseId=${activeCourseId}`, config);
+      setPracticeResults(Array.isArray(res.data?.results) ? res.data.results : []);
+    } catch (err) {
+      setPracticeResults([]);
+    } finally {
+      setPracticeResultsLoading(false);
+    }
+  };
+
+  const fetchPracticeLeaderboard = async (testIdOverride, courseIdOverride) => {
+    const targetCourseId = String(courseIdOverride || activeCourseId || '').trim();
+    if (!targetCourseId || targetCourseId === 'all') {
+      setPracticeLeaderboard([]);
+      return;
+    }
+
+    const targetTestId = String(testIdOverride || practiceLeaderboardTestId || '').trim();
+    if (!targetTestId) {
+      setPracticeLeaderboard([]);
+      return;
+    }
+
+    try {
+      setPracticeLeaderboardLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(
+        `${API_BASE}/api/tests/leaderboard?courseId=${encodeURIComponent(targetCourseId)}&testId=${encodeURIComponent(
+          targetTestId
+        )}&limit=20`,
+        config
+      );
+      setPracticeLeaderboard(Array.isArray(res.data?.leaderboard) ? res.data.leaderboard : []);
+    } catch (err) {
+      setPracticeLeaderboard([]);
+    } finally {
+      setPracticeLeaderboardLoading(false);
     }
   };
 
@@ -472,10 +801,6 @@ const ProfessorDashboard = () => {
               {isDark ? <Sun size={16} /> : <Moon size={16} />}
               <span>{isDark ? 'Light' : 'Dark'}</span>
             </button>
-            <button className="prof-nav-footer-btn logout" onClick={handleLogout}>
-              <LogOut size={16} />
-              <span>Exit</span>
-            </button>
           </div>
         </div>
       </div>
@@ -524,6 +849,16 @@ const ProfessorDashboard = () => {
                 {analytics?.topicPerformance?.map((t) => (<option key={t.topic}>{t.topic}</option>))}
               </select>
             </div>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--error)', whiteSpace: 'nowrap' }}
+              onClick={handleLogout}
+              title="Logout"
+            >
+              <LogOut size={16} />
+              <span>Logout</span>
+            </button>
           </div>
         </header>
 
@@ -1380,6 +1715,333 @@ const ProfessorDashboard = () => {
                             )}
                           </div>
                         )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
+              <h2 className="text-xl font-bold mb-2">Practice Tests</h2>
+              <p style={{ color: 'var(--muted)', marginBottom: '1rem' }}>
+                Create course-specific practice tests and review student attempts.
+              </p>
+
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  const next = !showPracticeStats;
+                  setShowPracticeStats(next);
+                  if (next && !practiceLeaderboardTestId && Array.isArray(practiceTests) && practiceTests.length > 0) {
+                    const first = practiceTests[0]._id;
+                    setPracticeLeaderboardTestId(first);
+                    fetchPracticeLeaderboard(first, activeCourseId);
+                  }
+                  if (!next) {
+                    setPracticeLeaderboard([]);
+                  }
+                }}
+              >
+                View performance statistics
+              </button>
+
+              {showPracticeStats && (
+                <div style={{ marginTop: '1rem', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <h3 className="text-lg font-semibold">Leaderboard</h3>
+                    <button className="btn-secondary" onClick={fetchPracticeLeaderboard}>
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', marginBottom: '0.75rem' }}>
+                    <select
+                      className="glass-input"
+                      value={practiceLeaderboardTestId}
+                      onChange={(e) => {
+                        const nextTestId = e.target.value;
+                        setPracticeLeaderboardTestId(nextTestId);
+                      }}
+                    >
+                      <option value="">Select a quiz</option>
+                      {practiceTests.map((t) => (
+                        <option key={t._id} value={t._id}>
+                          {t.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {!practiceLeaderboardTestId ? (
+                    <p style={{ color: 'var(--muted)' }}>Select a quiz to view its leaderboard.</p>
+                  ) : practiceLeaderboardLoading ? (
+                    <p style={{ color: 'var(--muted)' }}>Loading leaderboard...</p>
+                  ) : practiceLeaderboard.length === 0 ? (
+                    <p style={{ color: 'var(--muted)' }}>No attempts yet.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {practiceLeaderboard.map((row, idx) => (
+                        <div
+                          key={row.studentId || idx}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: '52px 1.4fr 0.8fr 0.8fr 0.8fr',
+                            gap: '0.75rem',
+                            alignItems: 'center',
+                            padding: '0.75rem',
+                            borderRadius: '10px',
+                            border: '1px solid var(--border)',
+                            background: 'rgba(255, 255, 255, 0.03)',
+                          }}
+                        >
+                          <div style={{ fontWeight: 700, color: 'var(--muted)' }}>#{idx + 1}</div>
+                          <div>
+                            <div style={{ fontWeight: 700 }}>{row.student?.name || 'Student'}</div>
+                            {row.student?.email ? (
+                              <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{row.student.email}</div>
+                            ) : null}
+                          </div>
+                          <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                            Attempts: <strong style={{ color: 'var(--text-main)' }}>{row.attempts}</strong>
+                          </div>
+                          <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                            Avg: <strong style={{ color: 'var(--text-main)' }}>{Number(row.avgScore ?? 0)}%</strong>
+                          </div>
+                          <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                            Best: <strong style={{ color: 'var(--text-main)' }}>{Number(row.bestScore ?? 0)}%</strong>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <input
+                  className="glass-input"
+                  type="number"
+                  min="1"
+                  max="25"
+                  placeholder="AI question count (1-25)"
+                  value={practiceGenerate.count}
+                  onChange={(e) => setPracticeGenerate((prev) => ({ ...prev, count: e.target.value }))}
+                />
+                <input
+                  className="glass-input"
+                  placeholder="AI instructions (optional)"
+                  value={practiceGenerate.instructions}
+                  onChange={(e) => setPracticeGenerate((prev) => ({ ...prev, instructions: e.target.value }))}
+                />
+              </div>
+
+              <button
+                className="btn-secondary"
+                style={{ marginTop: '1rem', opacity: practiceGenerating ? 0.7 : 1 }}
+                onClick={generatePracticeQuestionsWithAi}
+                disabled={practiceGenerating}
+              >
+                {practiceGenerating ? 'Generating...' : 'Generate with AI'}
+              </button>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <input
+                  className="glass-input"
+                  placeholder="Test title"
+                  value={practiceTestForm.title}
+                  onChange={(e) => setPracticeTestForm({ ...practiceTestForm, title: e.target.value })}
+                />
+                <select
+                  className="glass-input"
+                  value={practiceTestForm.difficulty}
+                  onChange={(e) => setPracticeTestForm({ ...practiceTestForm, difficulty: e.target.value })}
+                >
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </div>
+
+              <input
+                className="glass-input"
+                style={{ marginTop: '1rem', width: '100%' }}
+                placeholder="Syllabus topics (comma-separated)"
+                value={practiceTestForm.topics}
+                onChange={(e) => setPracticeTestForm({ ...practiceTestForm, topics: e.target.value })}
+              />
+
+              <div style={{ marginTop: '1rem' }}>
+                {practiceQuestions.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>
+                    No questions loaded yet. Click “Generate with AI” to create questions.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceQuestions.map((q, qi) => (
+                      <div
+                        key={qi}
+                        className="glass-card"
+                        style={{ padding: '1rem', borderRadius: '12px' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center' }}>
+                          <h4 className="font-semibold">Question {qi + 1}</h4>
+                          <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                            Correct: {Number.isInteger(Number(q?.correctAnswer)) ? Number(q.correctAnswer) + 1 : '—'}
+                          </span>
+                        </div>
+
+                        <input
+                          className="glass-input"
+                          style={{ marginTop: '0.75rem', width: '100%' }}
+                          placeholder="Question text"
+                          value={q?.questionText || ''}
+                          onChange={(e) => updatePracticeQuestion(qi, { questionText: e.target.value })}
+                        />
+
+                        <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          {(Array.isArray(q?.options) ? q.options : []).map((opt, oi) => (
+                            <div key={oi} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                              <input
+                                type="radio"
+                                name={`correct-${qi}`}
+                                checked={Number(q?.correctAnswer) === oi}
+                                onChange={() => updatePracticeQuestion(qi, { correctAnswer: oi })}
+                              />
+                              <input
+                                className="glass-input"
+                                style={{ width: '100%' }}
+                                placeholder={`Option ${oi + 1}`}
+                                value={opt}
+                                onChange={(e) => updatePracticeOption(qi, oi, e.target.value)}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
+                          <input
+                            className="glass-input"
+                            placeholder="Topic (optional)"
+                            value={q?.topic || ''}
+                            onChange={(e) => updatePracticeQuestion(qi, { topic: e.target.value })}
+                          />
+                          <select
+                            className="glass-input"
+                            value={Number.isInteger(Number(q?.correctAnswer)) ? String(Number(q.correctAnswer)) : ''}
+                            onChange={(e) => updatePracticeQuestion(qi, { correctAnswer: Number(e.target.value) })}
+                          >
+                            <option value="">Correct answer</option>
+                            {(Array.isArray(q?.options) ? q.options : []).map((opt, oi) => (
+                              <option key={oi} value={String(oi)}>
+                                Option {oi + 1}{opt ? `: ${String(opt).slice(0, 60)}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <textarea
+                          className="glass-input"
+                          rows="3"
+                          style={{ marginTop: '0.75rem', width: '100%' }}
+                          placeholder="Explanation (optional)"
+                          value={q?.explanation || ''}
+                          onChange={(e) => updatePracticeQuestion(qi, { explanation: e.target.value })}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button className="btn-primary" style={{ marginTop: '1rem' }} onClick={createPracticeTest}>
+                Create Practice Test
+              </button>
+
+              {practiceTestMessage && (
+                <p style={{ marginTop: '0.75rem', color: 'var(--muted)' }}>{practiceTestMessage}</p>
+              )}
+
+              <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-lg font-semibold">Tests</h3>
+                  <button className="btn-secondary" onClick={fetchPracticeTests}>Refresh</button>
+                </div>
+                {practiceTestsLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading tests...</p>
+                ) : practiceTests.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No practice tests yet for this course.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceTests.map((t) => (
+                      <div key={t._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'start' }}>
+                          <div>
+                            <h4 className="font-semibold">{t.title}</h4>
+                            <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              {t.difficulty} • {t.questionCount} questions
+                            </p>
+                            {Array.isArray(t.topics) && t.topics.length > 0 && (
+                              <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.35rem' }}>
+                                Topics: {t.topics.join(', ')}
+                              </p>
+                            )}
+
+                            <div style={{ marginTop: '0.75rem' }}>
+                              <button
+                                className="btn-secondary"
+                                onClick={() => {
+                                  setShowPracticeStats(true);
+                                  setPracticeLeaderboardTestId(t._id);
+                                  fetchPracticeResults();
+                                  fetchPracticeLeaderboard(t._id, t.courseId);
+                                }}
+                              >
+                                View analytics
+                              </button>
+                            </div>
+                          </div>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                            {t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-lg font-semibold">Recent Attempts</h3>
+                  <button className="btn-secondary" onClick={fetchPracticeResults}>Refresh</button>
+                </div>
+
+                {practiceResultsLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading attempts...</p>
+                ) : practiceResults.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No attempts yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceResults.slice(0, 12).map((r) => (
+                      <div key={r.attemptId} style={{ padding: '0.9rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                          <div>
+                            <strong>{r.student?.name || r.student?.email || 'Student'}</strong>
+                            {r.student?.email ? <span style={{ color: 'var(--muted)' }}> · {r.student.email}</span> : null}
+                            <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                              {r.test?.title || 'Test'} • Score: {r.score}%
+                              {r.createdAt ? ` • ${new Date(r.createdAt).toLocaleString()}` : ''}
+                            </div>
+                          </div>
+                          {Array.isArray(r.weakAreas) && r.weakAreas.length > 0 ? (
+                            <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                              Weak areas: {r.weakAreas.join(', ')}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Weak areas: —</div>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>

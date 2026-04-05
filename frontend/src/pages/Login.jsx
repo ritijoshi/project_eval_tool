@@ -58,6 +58,8 @@ const Login = () => {
         JSON.stringify({ name: userName, email, role: userRole, _id })
       );
 
+      window.dispatchEvent(new Event('auth-changed'));
+
       navigate(userRole === 'professor' ? '/professor' : '/student');
     } catch (err) {
       setError(err.response?.data?.message || 'Authentication failed. Please try again.');

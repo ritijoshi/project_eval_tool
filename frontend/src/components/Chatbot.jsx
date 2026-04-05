@@ -12,12 +12,18 @@ const Chatbot = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const messagesEndRef = useRef(null);
+  const bodyRef = useRef(null);
   const recognitionRef = useRef(null);
   const { activeCourseId, activeCourse } = useActiveCourse();
   const activeCourseKey = useMemo(() => activeCourse?.courseCode || '', [activeCourse]);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const body = bodyRef.current;
+    if (!body) return;
+    // Only scroll inside the chat message panel (never the whole page).
+    requestAnimationFrame(() => {
+      body.scrollTop = body.scrollHeight;
+    });
   };
 
   useEffect(() => {
@@ -178,7 +184,7 @@ const Chatbot = () => {
         </select>
       </div>
 
-      <div className="chatgpt-body">
+      <div className="chatgpt-body" ref={bodyRef}>
         {historyLoading ? (
           <div className="chatgpt-empty">Loading chat history...</div>
         ) : messages.length === 0 ? (

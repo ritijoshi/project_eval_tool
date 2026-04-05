@@ -32,7 +32,7 @@ const createAssignment = async (req, res) => {
             return res.status(400).json({ message: 'title, courseId, and deadline are required' });
         }
 
-        const course = await Course.findById(courseId).select('professor');
+        const course = await Course.findById(courseId).select('professor students courseCode');
         if (!course) {
             return res.status(404).json({ message: 'Course not found' });
         }
@@ -53,6 +53,19 @@ const createAssignment = async (req, res) => {
             createdBy: professorId,
         });
 
+        const io = req.app?.get('io');
+        if (io && Array.isArray(course.students)) {
+            course.students.forEach((studentId) => {
+                io.to(`user:${studentId}`).emit('assignments-updated', {
+                    reason: 'created',
+                    courseId: String(courseId),
+                    courseKey: String(course.courseCode || '').trim().toLowerCase(),
+                    assignmentId: String(assignment._id),
+                    timestamp: new Date().toISOString(),
+                });
+            });
+        }
+
         return res.status(201).json({ message: 'Assignment created.', assignment });
     } catch (error) {
         return res.status(500).json({ message: error.message || 'Failed to create assignment' });
@@ -66,16 +79,23 @@ const listAssignmentsForProfessor = async (req, res) => {
 
     try {
         const professorId = req.user?._id;
-        const { courseId } = req.query || {};
+        const { courseId, sort = '' } = req.query || {};
 
         const courseQuery = { createdBy: professorId };
         if (courseId) {
             courseQuery.course = courseId;
         }
 
+        const sortOption =
+            sort === 'newest'
+                ? { createdAt: -1 }
+                : sort === 'oldest'
+                    ? { createdAt: 1 }
+                    : { deadline: 1 };
+
         const assignments = await Assignment.find(courseQuery)
             .populate('course', 'title courseCode')
-            .sort({ deadline: 1 })
+            .sort(sortOption)
             .lean();
 
         return res.status(200).json({ assignments });
@@ -91,7 +111,7 @@ const listAssignmentsForStudent = async (req, res) => {
 
     try {
         const studentId = req.user?._id;
-        const { courseId } = req.query || {};
+        const { courseId, sort = '' } = req.query || {};
 
         if (!courseId) {
             return res.status(400).json({ message: 'courseId is required' });
@@ -106,8 +126,15 @@ const listAssignmentsForStudent = async (req, res) => {
             return res.status(403).json({ message: 'Not enrolled in this course' });
         }
 
+        const sortOption =
+            sort === 'newest'
+                ? { createdAt: -1 }
+                : sort === 'oldest'
+                    ? { createdAt: 1 }
+                    : { deadline: 1 };
+
         const assignments = await Assignment.find({ course: courseId })
-            .sort({ deadline: 1 })
+            .sort(sortOption)
             .lean();
 
         const submissions = await Submission.find({

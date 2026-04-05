@@ -167,6 +167,17 @@ const inviteStudents = async (req, res) => {
             )
         );
 
+        const io = req.app?.get('io');
+        if (io) {
+            studentIdsResolved.forEach((studentId) => {
+                io.to(`user:${studentId}`).emit('courses-updated', {
+                    reason: 'invited',
+                    courseId: String(course._id),
+                    timestamp: new Date().toISOString(),
+                });
+            });
+        }
+
         const missingEmails = normalizedEmails.filter(
             (email) => !students.some((student) => student.email.toLowerCase() === email)
         );
@@ -220,6 +231,15 @@ const joinCourse = async (req, res) => {
             { $setOnInsert: { progress: 0, grades: [] } },
             { upsert: true, new: true }
         );
+
+        const io = req.app?.get('io');
+        if (io) {
+            io.to(`user:${studentId}`).emit('courses-updated', {
+                reason: 'joined',
+                courseId: String(course._id),
+                timestamp: new Date().toISOString(),
+            });
+        }
 
         return res.status(200).json({
             message: 'Enrolled successfully.',

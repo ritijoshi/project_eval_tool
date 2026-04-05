@@ -7,6 +7,7 @@ const {
 	evaluateProject,
 	evaluateProjectFiles,
 	updatePersonalizationInputs,
+	getActiveRubricForCourse,
 } = require('../controllers/studentController');
 const { listCourses, joinCourse } = require('../controllers/courseController');
 const { handleChat, getSavedChatHistory, deleteSavedChatHistory } = require('../controllers/chatController');
@@ -65,6 +66,7 @@ router.post('/submit-proposal', protect, isStudent, submitProposal);
 router.post('/evaluate', protect, isStudent, evaluateProject);
 router.post('/evaluate-files', protect, isStudent, upload.array('files', 10), evaluateProjectFiles);
 router.post('/personalization-inputs', protect, isStudent, updatePersonalizationInputs);
+router.get('/rubric', protect, isStudent, getActiveRubricForCourse);
 router.get('/courses', protect, isStudent, listCourses);
 router.post('/courses/join', protect, isStudent, joinCourse);
 router.get('/assignments', protect, isStudent, assignmentController.listAssignmentsForStudent);
