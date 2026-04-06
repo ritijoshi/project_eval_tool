@@ -2,6 +2,15 @@ const mongoose = require('mongoose');
 const Course = require('../models/Course');
 const Enrollment = require('../models/Enrollment');
 const User = require('../models/User');
+const Announcement = require('../models/Announcement');
+const Assignment = require('../models/Assignment');
+const Submission = require('../models/Submission');
+const Test = require('../models/Test');
+const Attempt = require('../models/Attempt');
+const Rubric = require('../models/Rubric');
+const WeeklyUpdate = require('../models/WeeklyUpdate');
+const Feedback = require('../models/Feedback');
+const ChatHistory = require('../models/ChatHistory');
 
 const ensureDbConnected = () => mongoose.connection.readyState === 1;
 
@@ -250,10 +259,142 @@ const joinCourse = async (req, res) => {
     }
 };
 
+const unenrollCourse = async (req, res) => {
+    if (!ensureDbConnected()) {
+        return res.status(503).json({ message: 'Database is not connected' });
+    }
+
+    try {
+        const studentId = req.user?._id;
+        const { courseId } = req.params;
+
+        if (!studentId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(String(courseId))) {
+            return res.status(400).json({ message: 'Invalid courseId' });
+        }
+
+        const course = await Course.findById(courseId).select('_id students').lean();
+        if (!course) {
+            return res.status(404).json({ message: 'Course not found' });
+        }
+
+        const isEnrolled = Array.isArray(course.students)
+            ? course.students.some((id) => String(id) === String(studentId))
+            : false;
+        if (!isEnrolled) {
+            return res.status(400).json({ message: 'You are not enrolled in this course' });
+        }
+
+        await Promise.all([
+            Course.updateOne({ _id: courseId }, { $pull: { students: studentId } }),
+            User.updateOne({ _id: studentId }, { $pull: { enrolledCourses: courseId } }),
+            User.updateOne({ _id: studentId, lastActiveCourse: courseId }, { $set: { lastActiveCourse: null } }),
+            Enrollment.deleteOne({ student: studentId, course: courseId }),
+        ]);
+
+        const io = req.app?.get('io');
+        if (io) {
+            io.to(`user:${studentId}`).emit('courses-updated', {
+                reason: 'unenrolled',
+                courseId: String(courseId),
+                timestamp: new Date().toISOString(),
+            });
+        }
+
+        return res.status(200).json({ message: 'Unenrolled successfully.' });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to unenroll from course' });
+    }
+};
+
+const deleteCourse = async (req, res) => {
+    if (!ensureDbConnected()) {
+        return res.status(503).json({ message: 'Database is not connected' });
+    }
+
+    try {
+        const professorId = req.user?._id;
+        const { courseId } = req.params;
+
+        if (!professorId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(String(courseId))) {
+            return res.status(400).json({ message: 'Invalid courseId' });
+        }
+
+        const course = await Course.findOne({ _id: courseId, professor: professorId })
+            .select('_id courseCode students professor')
+            .lean();
+
+        if (!course) {
+            return res.status(404).json({ message: 'Course not found' });
+        }
+
+        const studentIds = Array.isArray(course.students) ? course.students.map((id) => String(id)) : [];
+        const courseKey = String(course.courseCode || '').trim().toLowerCase();
+
+        const assignmentDocs = await Assignment.find({ course: courseId }).select('_id').lean();
+        const assignmentIds = assignmentDocs.map((row) => row._id);
+
+        await Promise.all([
+            Enrollment.deleteMany({ course: courseId }),
+            Announcement.deleteMany({ courseId }),
+            Attempt.deleteMany({ courseId }),
+            Test.deleteMany({ courseId }),
+            Submission.deleteMany({ assignment: { $in: assignmentIds } }),
+            Assignment.deleteMany({ course: courseId }),
+            courseKey ? Rubric.deleteMany({ courseKey }) : Promise.resolve(),
+            courseKey ? WeeklyUpdate.deleteMany({ courseKey }) : Promise.resolve(),
+            courseKey ? Feedback.deleteMany({ courseKey }) : Promise.resolve(),
+            courseKey ? ChatHistory.deleteMany({ courseKey }) : Promise.resolve(),
+            studentIds.length
+                ? User.updateMany({ _id: { $in: studentIds } }, { $pull: { enrolledCourses: courseId } })
+                : Promise.resolve(),
+            studentIds.length
+                ? User.updateMany(
+                      { _id: { $in: studentIds }, lastActiveCourse: courseId },
+                      { $set: { lastActiveCourse: null } }
+                  )
+                : Promise.resolve(),
+            User.updateOne({ _id: professorId }, { $pull: { createdCourses: courseId } }),
+            User.updateOne({ _id: professorId, lastActiveCourse: courseId }, { $set: { lastActiveCourse: null } }),
+            Course.deleteOne({ _id: courseId, professor: professorId }),
+        ]);
+
+        const io = req.app?.get('io');
+        if (io) {
+            io.to(`user:${professorId}`).emit('courses-updated', {
+                reason: 'deleted',
+                courseId: String(courseId),
+                timestamp: new Date().toISOString(),
+            });
+
+            studentIds.forEach((studentId) => {
+                io.to(`user:${studentId}`).emit('courses-updated', {
+                    reason: 'course-deleted',
+                    courseId: String(courseId),
+                    timestamp: new Date().toISOString(),
+                });
+            });
+        }
+
+        return res.status(200).json({ message: 'Course deleted successfully.' });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to delete course' });
+    }
+};
+
 module.exports = {
     listCourses,
     createCourse,
     inviteStudents,
     joinCourse,
+    unenrollCourse,
+    deleteCourse,
 };
 

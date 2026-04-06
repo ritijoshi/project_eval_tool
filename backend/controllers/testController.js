@@ -132,6 +132,7 @@ const pickUnseenQuestions = async ({ studentId, test, count }) => {
 const toPublicTestListItem = (test) => ({
     _id: String(test._id),
     courseId: String(test.courseId),
+    isActive: test.isActive !== false,
     title: test.title,
     topics: Array.isArray(test.topics) ? test.topics : [],
     difficulty: test.difficulty,
@@ -139,6 +140,57 @@ const toPublicTestListItem = (test) => ({
     questionCount: Array.isArray(test.questions) ? test.questions.length : 0,
     createdAt: test.createdAt,
 });
+
+const setTestActive = async (req, res) => {
+    if (!ensureDbConnected()) {
+        return res.status(503).json({ message: 'Database is not connected' });
+    }
+
+    try {
+        const professorId = req.user?._id;
+        const role = req.user?.role;
+        const { testId } = req.params;
+        const { isActive } = req.body || {};
+
+        if (!professorId) return res.status(401).json({ message: 'Unauthorized' });
+        if (role !== 'professor') return res.status(403).json({ message: 'Not authorized' });
+        if (!testId || !mongoose.Types.ObjectId.isValid(testId)) {
+            return res.status(400).json({ message: 'Valid testId is required' });
+        }
+
+        const test = await Test.findById(testId).select('_id courseId isActive');
+        if (!test) return res.status(404).json({ message: 'Test not found' });
+
+        const course = await Course.findById(test.courseId).select('professor students');
+        if (!course) return res.status(404).json({ message: 'Course not found' });
+        if (String(course.professor) !== String(professorId)) {
+            return res.status(403).json({ message: 'Not authorized for this course' });
+        }
+
+        const next = Boolean(isActive);
+        test.isActive = next;
+        await test.save();
+
+        const io = req.app?.get('io');
+        if (io) {
+            const payload = {
+                kind: 'test-updated',
+                courseId: String(test.courseId),
+                testId: String(test._id),
+                isActive: next,
+                timestamp: new Date().toISOString(),
+            };
+            io.to(`user:${course.professor}`).emit('practice-updated', payload);
+            (course.students || []).forEach((studentId) => {
+                io.to(`user:${studentId}`).emit('practice-updated', payload);
+            });
+        }
+
+        return res.status(200).json({ message: 'Test updated.', test: toPublicTestListItem(test.toObject ? test.toObject() : test) });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to update test' });
+    }
+};
 
 const createTest = async (req, res) => {
     if (!ensureDbConnected()) {
@@ -228,7 +280,12 @@ const listTests = async (req, res) => {
             return res.status(403).json({ message: 'Not authorized' });
         }
 
-        const tests = await Test.find({ courseId })
+        const query = { courseId };
+        if (role === 'student') {
+            query.isActive = true;
+        }
+
+        const tests = await Test.find(query)
             .sort({ createdAt: -1 })
             .lean();
 
@@ -254,6 +311,10 @@ const getTestForStudent = async (req, res) => {
 
         const test = await Test.findById(testId).lean();
         if (!test) return res.status(404).json({ message: 'Test not found' });
+
+        if (test.isActive === false) {
+            return res.status(403).json({ message: 'This practice test is inactive' });
+        }
 
         const course = await Course.findById(test.courseId).select('students');
         if (!course) return res.status(404).json({ message: 'Course not found' });
@@ -309,6 +370,10 @@ const checkAnswer = async (req, res) => {
         const test = await Test.findById(testId);
         if (!test) return res.status(404).json({ message: 'Test not found' });
 
+        if (test.isActive === false) {
+            return res.status(403).json({ message: 'This practice test is inactive' });
+        }
+
         const course = await Course.findById(test.courseId).select('students');
         if (!course) return res.status(404).json({ message: 'Course not found' });
 
@@ -350,6 +415,10 @@ const submitAttempt = async (req, res) => {
 
         const test = await Test.findById(testId).lean();
         if (!test) return res.status(404).json({ message: 'Test not found' });
+
+        if (test.isActive === false) {
+            return res.status(403).json({ message: 'This practice test is inactive' });
+        }
 
         const course = await Course.findById(test.courseId).select('students professor courseCode');
         if (!course) return res.status(404).json({ message: 'Course not found' });
@@ -691,4 +760,5 @@ module.exports = {
     getResults,
     getLeaderboard,
     generateTestQuestions,
+    setTestActive,
 };

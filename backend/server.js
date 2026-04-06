@@ -10,6 +10,7 @@ const { requestLogger } = require('./middleware/requestLogger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { getAllowedOrigins } = require('./config/services');
 const path = require('path');
+const { startAnnouncementScheduler } = require('./jobs/announcementScheduler');
 
 dotenv.config();
 
@@ -96,12 +97,15 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/user', require('./routes/user'));
+app.use('/api/announcements', require('./routes/announcements'));
 app.use('/api', require('./routes/tests'));
 
 app.use(notFoundHandler);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
+
+startAnnouncementScheduler(app, { intervalMs: process.env.ANNOUNCEMENT_SCHEDULER_MS });
 
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

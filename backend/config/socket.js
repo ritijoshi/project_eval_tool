@@ -24,8 +24,12 @@ const initializeSocket = (server) => {
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      socket.userId = decoded.id;
+      socket.userId = decoded.userId || decoded.id;
       socket.userRole = decoded.role;
+
+      if (!socket.userId) {
+        return next(new Error('Invalid token payload'));
+      }
       next();
     } catch (err) {
       next(new Error('Invalid token'));

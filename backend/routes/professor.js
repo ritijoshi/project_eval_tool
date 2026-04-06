@@ -94,6 +94,7 @@ router.get('/analytics', protect, isProfessor, getAnalytics);
 router.get('/courses', protect, isProfessor, courseController.listCourses);
 router.post('/courses', protect, isProfessor, courseController.createCourse);
 router.post('/courses/:courseId/invite', protect, isProfessor, courseController.inviteStudents);
+router.delete('/courses/:courseId', protect, isProfessor, courseController.deleteCourse);
 router.post('/assignments', protect, isProfessor, assignmentUpload.array('files', 10), assignmentController.createAssignment);
 router.get('/assignments', protect, isProfessor, assignmentController.listAssignmentsForProfessor);
 router.get('/assignments/:assignmentId/submissions', protect, isProfessor, assignmentController.listAssignmentSubmissions);

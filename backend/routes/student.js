@@ -9,7 +9,7 @@ const {
 	updatePersonalizationInputs,
 	getActiveRubricForCourse,
 } = require('../controllers/studentController');
-const { listCourses, joinCourse } = require('../controllers/courseController');
+const { listCourses, joinCourse, unenrollCourse } = require('../controllers/courseController');
 const { handleChat, getSavedChatHistory, deleteSavedChatHistory } = require('../controllers/chatController');
 const { protect, isStudent } = require('../middleware/authMiddleware');
 const multer = require('multer');
@@ -69,6 +69,7 @@ router.post('/personalization-inputs', protect, isStudent, updatePersonalization
 router.get('/rubric', protect, isStudent, getActiveRubricForCourse);
 router.get('/courses', protect, isStudent, listCourses);
 router.post('/courses/join', protect, isStudent, joinCourse);
+router.post('/courses/:courseId/unenroll', protect, isStudent, unenrollCourse);
 router.get('/assignments', protect, isStudent, assignmentController.listAssignmentsForStudent);
 router.get('/assignments/upcoming', protect, isStudent, assignmentController.listUpcomingAssignments);
 router.post('/assignments/:assignmentId/submissions', protect, isStudent, submissionUpload.array('files', 10), assignmentController.submitAssignment);

@@ -12,6 +12,7 @@ const testController = require('../controllers/testController');
 
 router.get('/tests', protect, testController.listTests);
 router.post('/tests', protect, isProfessor, testController.createTest);
+router.patch('/tests/:testId/active', protect, isProfessor, testController.setTestActive);
 
 // Professor: generate questions with AI for a course (professor can edit before saving).
 router.post('/tests/generate', protect, isProfessor, testController.generateTestQuestions);

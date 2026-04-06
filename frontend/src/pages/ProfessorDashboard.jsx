@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Upload, LayoutDashboard, Target, Book, MessagesSquare, LogOut, Filter, BarChart3, TrendingUp, Sun, Moon, ChevronDown, AlertCircle, HelpCircle } from 'lucide-react';
+import { Users, Upload, LayoutDashboard, Target, Book, MessagesSquare, LogOut, Filter, BarChart3, TrendingUp, Sun, Moon, ChevronDown, AlertCircle, HelpCircle, Trash2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer, Cell, ScatterChart, Scatter } from 'recharts';
 import axios from 'axios';
 import ProfessorMaterialsUploader from '../components/ProfessorMaterialsUploader';
 import QuickGuide from '../components/QuickGuide';
 import EvaluationReviewer from '../components/EvaluationReviewer';
+import AnnouncementsPanel from '../components/AnnouncementsPanel';
 import { API_BASE } from '../config/api';
 import CourseSwitcher from '../components/CourseSwitcher';
 import { useActiveCourse } from '../context/ActiveCourseContext';
@@ -43,6 +44,7 @@ const ProfessorDashboard = () => {
   const [coursesLoading, setCoursesLoading] = useState(false);
   const [courseForm, setCourseForm] = useState({ title: '', description: '' });
   const [courseMessage, setCourseMessage] = useState('');
+  const [courseDeleteStatus, setCourseDeleteStatus] = useState({});
   const [inviteInputs, setInviteInputs] = useState({});
   const [inviteStatus, setInviteStatus] = useState({});
   const { activeCourseId, activeCourse, isAllCourses, setActiveCourseId } = useActiveCourse();
@@ -154,6 +156,11 @@ const ProfessorDashboard = () => {
         return;
       }
 
+      if (data.kind === 'test-updated') {
+        fetchPracticeTests();
+        return;
+      }
+
       fetchPracticeResults();
       if (showPracticeStats) fetchPracticeLeaderboard();
     };
@@ -163,6 +170,20 @@ const ProfessorDashboard = () => {
       off('practice-updated', handlePracticeUpdated);
     };
   }, [on, off, activeTab, activeCourseId, showPracticeStats]);
+
+  const setPracticeTestActive = async (test, nextActive) => {
+    const testId = test?._id;
+    if (!testId) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.patch(`${API_BASE}/api/tests/${testId}/active`, { isActive: Boolean(nextActive) }, config);
+      fetchPracticeTests();
+    } catch (err) {
+      setPracticeTestMessage(err.response?.data?.message || 'Failed to update test status.');
+    }
+  };
 
   useEffect(() => {
     if (!showPracticeStats) return;
@@ -606,6 +627,35 @@ const ProfessorDashboard = () => {
     }
   };
 
+  const deleteCourse = async (course) => {
+    const courseId = course?._id;
+    if (!courseId) return;
+
+    const ok = window.confirm(
+      `Delete course "${course.title || 'Untitled'}" (code: ${course.courseCode || ''})? This cannot be undone.`
+    );
+    if (!ok) return;
+
+    try {
+      setCourseDeleteStatus((prev) => ({ ...prev, [courseId]: 'Deleting...' }));
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.delete(`${API_BASE}/api/professor/courses/${courseId}`, config);
+
+      if (String(activeCourseId) === String(courseId)) {
+        setActiveCourseId('all');
+      }
+
+      setCourseDeleteStatus((prev) => ({ ...prev, [courseId]: 'Deleted.' }));
+      fetchCourses();
+    } catch (err) {
+      setCourseDeleteStatus((prev) => ({
+        ...prev,
+        [courseId]: err.response?.data?.message || 'Failed to delete course.',
+      }));
+    }
+  };
+
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('role');
@@ -786,6 +836,13 @@ const ProfessorDashboard = () => {
               <Book size={18} />
               <span>Course Management</span>
             </button>
+            <button
+              className={`prof-nav-btn ${activeTab === 'announcements' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('announcements')}
+            >
+              <AlertCircle size={18} />
+              <span>Announcements</span>
+            </button>
           </nav>
 
           <div className="prof-sidebar-footer">
@@ -916,6 +973,14 @@ const ProfessorDashboard = () => {
           >
             <Book size={16} />
             Course Management
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'announcements' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('announcements')}
+          >
+            <AlertCircle size={16} />
+            Announcements
           </button>
           <button
             type="button"
@@ -1174,6 +1239,8 @@ const ProfessorDashboard = () => {
           )
         ) : activeTab === 'materials' ? (
           <ProfessorMaterialsUploader />
+        ) : activeTab === 'announcements' ? (
+          <AnnouncementsPanel role="professor" activeCourseId={activeCourseId} activeCourse={activeCourse} />
         ) : activeTab === 'rubrics' ? (
           <div className="prof-rubric-builder">
             <div className="prof-rubric-container">
@@ -1526,6 +1593,23 @@ const ProfessorDashboard = () => {
                               {inviteStatus[course._id]}
                             </p>
                           )}
+
+                          <div className="prof-rubric-item-actions" style={{ marginTop: '12px' }}>
+                            <button
+                              className="prof-btn-small prof-btn-danger"
+                              onClick={() => deleteCourse(course)}
+                              disabled={courseDeleteStatus[course._id] === 'Deleting...'}
+                              title="Delete course"
+                            >
+                              <Trash2 size={14} style={{ marginRight: 6 }} />
+                              Delete
+                            </button>
+                            {courseDeleteStatus[course._id] && (
+                              <span style={{ fontSize: '0.85rem', color: 'var(--muted)', alignSelf: 'center' }}>
+                                {courseDeleteStatus[course._id]}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -1541,18 +1625,24 @@ const ProfessorDashboard = () => {
               </p>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
-                <input
-                  className="glass-input"
-                  placeholder="Assignment title"
-                  value={assignmentForm.title}
-                  onChange={(e) => setAssignmentForm({ ...assignmentForm, title: e.target.value })}
-                />
-                <input
-                  className="glass-input"
-                  type="datetime-local"
-                  value={assignmentForm.deadline}
-                  onChange={(e) => setAssignmentForm({ ...assignmentForm, deadline: e.target.value })}
-                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Assignment title</label>
+                  <input
+                    className="glass-input"
+                    placeholder="Assignment title"
+                    value={assignmentForm.title}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, title: e.target.value })}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Deadline</label>
+                  <input
+                    className="glass-input"
+                    type="datetime-local"
+                    value={assignmentForm.deadline}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, deadline: e.target.value })}
+                  />
+                </div>
               </div>
               <textarea
                 className="glass-input"
@@ -1570,15 +1660,25 @@ const ProfessorDashboard = () => {
                 value={assignmentForm.rubric}
                 onChange={(e) => setAssignmentForm({ ...assignmentForm, rubric: e.target.value })}
               />
-              <input
-                type="file"
-                multiple
-                className="glass-input"
-                style={{ marginTop: '1rem', width: '100%' }}
-                onChange={(e) =>
-                  setAssignmentForm({ ...assignmentForm, files: Array.from(e.target.files || []) })
-                }
-              />
+              <div style={{ marginTop: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '0.35rem' }}>
+                  Assignment files (optional)
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  className="glass-input"
+                  style={{ width: '100%' }}
+                  onChange={(e) =>
+                    setAssignmentForm({ ...assignmentForm, files: Array.from(e.target.files || []) })
+                  }
+                />
+                {Array.isArray(assignmentForm.files) && assignmentForm.files.length > 0 && (
+                  <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
+                    {assignmentForm.files.length} file(s) selected
+                  </p>
+                )}
+              </div>
               <button className="btn-primary" style={{ marginTop: '1rem' }} onClick={createAssignment}>
                 Create Assignment
               </button>
@@ -1981,6 +2081,28 @@ const ProfessorDashboard = () => {
                             <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
                               {t.difficulty} • {t.questionCount} questions
                             </p>
+                            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                              <span
+                                style={{
+                                  fontSize: '0.75rem',
+                                  padding: '0.25rem 0.55rem',
+                                  borderRadius: '999px',
+                                  border: '1px solid var(--border)',
+                                  background: t.isActive === false ? 'rgba(255, 59, 48, 0.12)' : 'rgba(52, 199, 89, 0.12)',
+                                  color: t.isActive === false ? '#FF3B30' : '#34C759',
+                                }}
+                              >
+                                {t.isActive === false ? 'Inactive' : 'Active'}
+                              </span>
+
+                              <button
+                                className={t.isActive === false ? 'btn-primary' : 'btn-secondary'}
+                                onClick={() => setPracticeTestActive(t, t.isActive === false)}
+                                title={t.isActive === false ? 'Make this test available to students' : 'Prevent students from taking this test'}
+                              >
+                                {t.isActive === false ? 'Set Active' : 'Set Inactive'}
+                              </button>
+                            </div>
                             {Array.isArray(t.topics) && t.topics.length > 0 && (
                               <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.35rem' }}>
                                 Topics: {t.topics.join(', ')}

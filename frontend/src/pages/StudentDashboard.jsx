@@ -24,6 +24,7 @@ import {
 import axios from 'axios';
 import Chatbot from '../components/Chatbot';
 import FeedbackViewer from '../components/FeedbackViewer';
+import AnnouncementsPanel from '../components/AnnouncementsPanel';
 import { API_BASE } from '../config/api';
 import CourseSwitcher from '../components/CourseSwitcher';
 import { useActiveCourse } from '../context/ActiveCourseContext';
@@ -50,6 +51,7 @@ const StudentDashboard = () => {
   const [joinCode, setJoinCode] = useState('');
   const [joinStatus, setJoinStatus] = useState('');
   const [joinStatusType, setJoinStatusType] = useState('');
+  const [unenrollStatus, setUnenrollStatus] = useState({});
   const {
     courses,
     loading: coursesLoading,
@@ -78,6 +80,8 @@ const StudentDashboard = () => {
   const [practiceTests, setPracticeTests] = useState([]);
   const [practiceLoading, setPracticeLoading] = useState(false);
   const [practiceError, setPracticeError] = useState('');
+  const [practiceHistory, setPracticeHistory] = useState([]);
+  const [practiceHistoryLoading, setPracticeHistoryLoading] = useState(false);
   const [practiceSettings, setPracticeSettings] = useState({
     timed: false,
     minutes: 10,
@@ -230,6 +234,45 @@ const StudentDashboard = () => {
     }
   };
 
+  const fetchPracticeHistory = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeHistory([]);
+      return;
+    }
+
+    try {
+      setPracticeHistoryLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/results?courseId=${encodeURIComponent(activeCourseId)}`, config);
+      setPracticeHistory(Array.isArray(res.data?.results) ? res.data.results : []);
+    } catch (err) {
+      setPracticeHistory([]);
+    } finally {
+      setPracticeHistoryLoading(false);
+    }
+  };
+
+  const viewPracticeAttempt = (attemptRow) => {
+    if (!attemptRow) return;
+    const breakdown = Array.isArray(attemptRow.breakdown) ? attemptRow.breakdown : [];
+    const correctCount = breakdown.filter((b) => Boolean(b?.correct)).length;
+    const total = breakdown.length;
+
+    setPracticeResult({
+      attemptId: attemptRow.attemptId,
+      testId: attemptRow?.test?._id,
+      courseId: activeCourseId,
+      score: Number(attemptRow.score) || 0,
+      correctCount,
+      total,
+      timeTakenSeconds: Number(attemptRow.timeTakenSeconds) || 0,
+      weakAreas: Array.isArray(attemptRow.weakAreas) ? attemptRow.weakAreas : [],
+      breakdown,
+      recommendedTests: [],
+    });
+  };
+
   const startPracticeTest = async (test) => {
     if (!test?._id) return;
     if (!activeCourseId || activeCourseId === 'all') return;
@@ -369,6 +412,7 @@ const StudentDashboard = () => {
   useEffect(() => {
     if (activeTab !== 'practice') return;
     fetchPracticeTests();
+    fetchPracticeHistory();
   }, [activeTab, activeCourseId]);
 
   useEffect(() => {
@@ -378,6 +422,7 @@ const StudentDashboard = () => {
       if (data.courseId && String(data.courseId) !== String(activeCourseId)) return;
       if (activeTab !== 'practice') return;
       fetchPracticeTests();
+      fetchPracticeHistory();
     };
 
     on('practice-updated', handlePracticeUpdated);
@@ -563,6 +608,28 @@ const StudentDashboard = () => {
     }
   };
 
+  const handleUnenrollCourse = async (course) => {
+    const courseId = course?._id;
+    if (!courseId) return;
+
+    const confirmText = `Unenroll from ${course.title || 'this course'} (${course.courseCode || ''})?`;
+    if (!window.confirm(confirmText)) return;
+
+    try {
+      setUnenrollStatus((prev) => ({ ...prev, [courseId]: { type: 'loading', message: 'Unenrolling...' } }));
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.post(`${API_BASE}/api/student/courses/${courseId}/unenroll`, {}, config);
+      setUnenrollStatus((prev) => ({ ...prev, [courseId]: { type: 'success', message: 'Unenrolled.' } }));
+      refreshCourses();
+    } catch (err) {
+      setUnenrollStatus((prev) => ({
+        ...prev,
+        [courseId]: { type: 'error', message: err.response?.data?.message || 'Failed to unenroll.' },
+      }));
+    }
+  };
+
   const fetchAssignments = async () => {
     if (!activeCourseId || activeCourseId === 'all') return;
     try {
@@ -712,6 +779,14 @@ const StudentDashboard = () => {
           >
             <Book size={20} />
             <span className="font-medium">Course Modules</span>
+          </button>
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'announcements' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
+            style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
+            onClick={() => setActiveTab('announcements')}
+          >
+            <AlertCircle size={20} />
+            <span className="font-medium">Announcements</span>
           </button>
           <button
             className={`flex items-center gap-4 w-full ${activeTab === 'practice' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
@@ -1309,6 +1384,10 @@ const StudentDashboard = () => {
           </div>
         )}
 
+        {activeTab === 'announcements' && (
+          <AnnouncementsPanel role="student" activeCourseId={activeCourseId} activeCourse={activeCourse} />
+        )}
+
         {/* OTHER TABS */}
         {activeTab === 'learning' && (
           <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem 1.5rem' }}>
@@ -1383,6 +1462,19 @@ const StudentDashboard = () => {
                       {course.professor?.name && (
                         <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
                           Professor: {course.professor.name}
+                        </p>
+                      )}
+
+                      <div style={{ marginTop: '0.9rem', display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <button className="btn-secondary" onClick={() => handleUnenrollCourse(course)}>
+                          <Trash2 size={16} style={{ marginRight: '0.35rem' }} />
+                          Unenroll
+                        </button>
+                      </div>
+
+                      {unenrollStatus[course._id]?.message && (
+                        <p style={{ marginTop: '0.65rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                          {unenrollStatus[course._id].message}
                         </p>
                       )}
                     </div>
@@ -1862,7 +1954,61 @@ const StudentDashboard = () => {
               </div>
             ) : (
               <div className="glass-panel">
-                <h3 className="text-lg font-semibold">Available Tests</h3>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                  <h3 className="text-lg font-semibold">Available Tests</h3>
+                  <button className="btn-secondary" onClick={fetchPracticeHistory} disabled={practiceHistoryLoading}>
+                    {practiceHistoryLoading ? 'Refreshing…' : 'Refresh history'}
+                  </button>
+                </div>
+
+                {activeCourseId && activeCourseId !== 'all' && (
+                  <div style={{ marginTop: '1rem' }}>
+                    <h4 className="font-semibold">My Past Attempts</h4>
+                    {practiceHistoryLoading ? (
+                      <p style={{ color: 'var(--muted)', marginTop: '0.5rem' }}>Loading your attempts…</p>
+                    ) : practiceHistory.length === 0 ? (
+                      <p style={{ color: 'var(--muted)', marginTop: '0.5rem' }}>No attempts yet for this course.</p>
+                    ) : (
+                      <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                        {practiceHistory.slice(0, 8).map((row) => (
+                          <div key={row.attemptId} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                            <p style={{ fontWeight: 800 }}>{row?.test?.title || 'Practice Test'}</p>
+                            <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              Score: {row.score}%
+                              {row.createdAt ? ` • ${new Date(row.createdAt).toLocaleString()}` : ''}
+                            </p>
+                            {Array.isArray(row.weakAreas) && row.weakAreas.length > 0 && (
+                              <p style={{ marginTop: '0.35rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                                Weak areas: {row.weakAreas.slice(0, 3).join(', ')}{row.weakAreas.length > 3 ? '…' : ''}
+                              </p>
+                            )}
+                            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+                              <button className="btn-secondary" onClick={() => viewPracticeAttempt(row)}>
+                                Review
+                              </button>
+                              <button
+                                className="btn-primary"
+                                onClick={() => {
+                                  const match = practiceTests.find((t) => String(t._id) === String(row?.test?._id));
+                                  if (match) startPracticeTest(match);
+                                  else setPracticeError('This test is no longer available to start.');
+                                }}
+                              >
+                                Retake
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {practiceHistory.length > 8 && (
+                      <p style={{ marginTop: '0.5rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                        Showing latest 8 attempts.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {practiceLoading ? (
                   <p style={{ color: 'var(--muted)', marginTop: '0.75rem' }}>Loading tests...</p>
                 ) : practiceTests.length === 0 ? (

@@ -43,6 +43,11 @@ const testSchema = new mongoose.Schema(
             required: true,
             index: true,
         },
+        isActive: {
+            type: Boolean,
+            default: true,
+            index: true,
+        },
         title: {
             type: String,
             required: true,
@@ -78,6 +83,7 @@ const testSchema = new mongoose.Schema(
 );
 
 testSchema.index({ courseId: 1, createdAt: -1 });
+testSchema.index({ courseId: 1, isActive: 1, createdAt: -1 });
 
 testSchema.pre('validate', function validateQuestions() {
     if (!Array.isArray(this.questions) || this.questions.length === 0) {
