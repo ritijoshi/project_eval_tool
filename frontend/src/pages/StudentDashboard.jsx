@@ -276,6 +276,10 @@ const StudentDashboard = () => {
   const startPracticeTest = async (test) => {
     if (!test?._id) return;
     if (!activeCourseId || activeCourseId === 'all') return;
+    if (test?.isActive === false) {
+      setPracticeError('This test is inactive and no longer available.');
+      return;
+    }
 
     try {
       setPracticeError('');
@@ -421,6 +425,27 @@ const StudentDashboard = () => {
       if (!activeCourseId || activeCourseId === 'all') return;
       if (data.courseId && String(data.courseId) !== String(activeCourseId)) return;
       if (activeTab !== 'practice') return;
+
+      if (data.kind === 'test-updated' && data.testId) {
+        setPracticeTests((prev) =>
+          prev.map((test) =>
+            String(test._id) === String(data.testId)
+              ? { ...test, isActive: data.isActive !== false }
+              : test
+          )
+        );
+
+        if (data.isActive === false) {
+          setPracticeSession((prev) => {
+            if (!prev?.test?._id) return prev;
+            if (String(prev.test._id) !== String(data.testId)) return prev;
+            setPracticeError('This test was set inactive by the professor.');
+            setPracticeTimeLeft(null);
+            return null;
+          });
+        }
+      }
+
       fetchPracticeTests();
       fetchPracticeHistory();
     };
@@ -733,6 +758,9 @@ const StudentDashboard = () => {
     return { label: `Submitted • v${submission.version}`, tone: 'success' };
   };
 
+  const activePracticeTests = practiceTests.filter((test) => test?.isActive !== false);
+  const pastPracticeTests = practiceTests.filter((test) => test?.isActive === false);
+
   return (
     <div className="dashboard-layout">
       {/* Sidebar */}
@@ -774,7 +802,7 @@ const StudentDashboard = () => {
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => {
               setActiveTab('courses');
-              fetchCourses();
+              refreshCourses();
             }}
           >
             <Book size={20} />
@@ -1972,6 +2000,11 @@ const StudentDashboard = () => {
                       <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
                         {practiceHistory.slice(0, 8).map((row) => (
                           <div key={row.attemptId} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                            {(() => {
+                              const match = practiceTests.find((t) => String(t._id) === String(row?.test?._id));
+                              const canRetake = Boolean(match && match.isActive !== false);
+                              return (
+                                <>
                             <p style={{ fontWeight: 800 }}>{row?.test?.title || 'Practice Test'}</p>
                             <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
                               Score: {row.score}%
@@ -1988,15 +2021,22 @@ const StudentDashboard = () => {
                               </button>
                               <button
                                 className="btn-primary"
+                                disabled={!canRetake}
                                 onClick={() => {
-                                  const match = practiceTests.find((t) => String(t._id) === String(row?.test?._id));
+                                  if (!canRetake) {
+                                    setPracticeError('This test is inactive and cannot be retaken.');
+                                    return;
+                                  }
                                   if (match) startPracticeTest(match);
                                   else setPracticeError('This test is no longer available to start.');
                                 }}
                               >
-                                Retake
+                                {canRetake ? 'Retake' : 'Inactive'}
                               </button>
                             </div>
+                                </>
+                              );
+                            })()}
                           </div>
                         ))}
                       </div>
@@ -2011,11 +2051,11 @@ const StudentDashboard = () => {
 
                 {practiceLoading ? (
                   <p style={{ color: 'var(--muted)', marginTop: '0.75rem' }}>Loading tests...</p>
-                ) : practiceTests.length === 0 ? (
+                ) : activePracticeTests.length === 0 ? (
                   <p style={{ color: 'var(--muted)', marginTop: '0.75rem' }}>No tests available for this course yet.</p>
                 ) : (
                   <div style={{ marginTop: '1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
-                    {practiceTests.map((t) => (
+                    {activePracticeTests.map((t) => (
                       <div key={t._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'start' }}>
                           <div>
@@ -2038,6 +2078,37 @@ const StudentDashboard = () => {
                         </button>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {pastPracticeTests.length > 0 && (
+                  <div style={{ marginTop: '1.25rem' }}>
+                    <h4 className="font-semibold">Past Tests</h4>
+                    <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.3rem' }}>
+                      These tests are inactive and cannot be retaken.
+                    </p>
+                    <div style={{ marginTop: '0.75rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                      {pastPracticeTests.map((t) => (
+                        <div key={t._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px', opacity: 0.88 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'start' }}>
+                            <div>
+                              <p style={{ fontWeight: 800 }}>{t.title}</p>
+                              <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                                Difficulty: {t.difficulty} • {t.questionCount} questions
+                              </p>
+                            </div>
+                            <span style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '999px', background: 'rgba(255, 59, 48, 0.15)', color: '#FF6259' }}>
+                              Inactive
+                            </span>
+                          </div>
+                          {Array.isArray(t.topics) && t.topics.length > 0 && (
+                            <p style={{ marginTop: '0.5rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              Topics: {t.topics.slice(0, 4).join(', ')}{t.topics.length > 4 ? '…' : ''}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

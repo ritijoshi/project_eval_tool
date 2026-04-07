@@ -3,6 +3,57 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
 
+const EyeIcon = () => (
+  <svg viewBox="0 0 24 24" className="auth-password-icon" aria-hidden="true">
+    <path
+      d="M2.5 12S6 5.5 12 5.5S21.5 12 21.5 12S18 18.5 12 18.5S2.5 12 2.5 12Z"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+  </svg>
+);
+
+const EyeOffIcon = () => (
+  <svg viewBox="0 0 24 24" className="auth-password-icon" aria-hidden="true">
+    <path
+      d="M3 3L21 21"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M10.6 5.7C11.05 5.57 11.52 5.5 12 5.5C18 5.5 21.5 12 21.5 12C21.08 12.74 20.56 13.43 19.96 14.04"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M14.12 14.12C13.58 14.66 12.83 15 12 15C10.34 15 9 13.66 9 12C9 11.17 9.34 10.42 9.88 9.88"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M6.02 6.02C4.63 7.04 3.45 8.39 2.5 12C2.5 12 6 18.5 12 18.5C13.62 18.5 15.03 18.03 16.24 17.31"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 const Login = () => {
   const navigate = useNavigate();
 
@@ -12,6 +63,7 @@ const Login = () => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -19,6 +71,7 @@ const Login = () => {
   const [showResetModal, setShowResetModal] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
 
   const roleLabel = useMemo(
@@ -32,9 +85,15 @@ const Login = () => {
     // Keep modal inputs fresh when switching role
     setResetEmail('');
     setNewPassword('');
+    setShowNewPassword(false);
     setError('');
     setSuccessMsg('');
   }, [role]);
+
+  useEffect(() => {
+    setShowPassword(false);
+    setError('');
+  }, [authMode]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -192,14 +251,25 @@ const Login = () => {
 
             <div className="auth-field">
               <label className="text-sm text-muted mb-2 block">Password</label>
-              <input
-                type="password"
-                className="glass-input"
-                placeholder="Enter password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
+              <div className="auth-password-row">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  className="glass-input auth-password-input"
+                  placeholder="Enter password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  className="auth-password-toggle"
+                  onClick={() => setShowPassword((current) => !current)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                >
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
             </div>
 
             <button
@@ -267,14 +337,25 @@ const Login = () => {
 
               <div className="auth-field">
                 <label className="text-sm text-muted mb-2 block">New Password</label>
-                <input
-                  type="password"
-                  className="glass-input"
-                  placeholder="Enter new password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                />
+                <div className="auth-password-row">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    className="glass-input auth-password-input"
+                    placeholder="Enter new password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="auth-password-toggle"
+                    onClick={() => setShowNewPassword((current) => !current)}
+                    aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
+                    aria-pressed={showNewPassword}
+                  >
+                    {showNewPassword ? <EyeOffIcon /> : <EyeIcon />}
+                  </button>
+                </div>
               </div>
 
               <div className="auth-modal-actions">

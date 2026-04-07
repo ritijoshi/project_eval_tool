@@ -632,6 +632,61 @@ a:hover {
   gap: 6px;
 }
 
+.auth-password-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-password-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.auth-password-toggle {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-h);
+  border-radius: 14px;
+  padding: 0;
+  width: 46px;
+  min-width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease,
+    opacity 0.2s ease;
+}
+
+.auth-password-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.auth-password-toggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--border-strong);
+}
+
+.auth-password-toggle:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.auth-password-toggle:active {
+  transform: translateY(1px);
+}
+
+@media (max-width: 640px) {
+  .auth-password-toggle {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+}
+
 .auth-submit:disabled {
   opacity: 0.75;
   cursor: not-allowed;

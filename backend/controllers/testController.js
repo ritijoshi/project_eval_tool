@@ -157,6 +157,9 @@ const setTestActive = async (req, res) => {
         if (!testId || !mongoose.Types.ObjectId.isValid(testId)) {
             return res.status(400).json({ message: 'Valid testId is required' });
         }
+        if (typeof isActive !== 'boolean') {
+            return res.status(400).json({ message: 'isActive must be a boolean' });
+        }
 
         const test = await Test.findById(testId).select('_id courseId isActive');
         if (!test) return res.status(404).json({ message: 'Test not found' });
@@ -167,7 +170,7 @@ const setTestActive = async (req, res) => {
             return res.status(403).json({ message: 'Not authorized for this course' });
         }
 
-        const next = Boolean(isActive);
+        const next = isActive;
         test.isActive = next;
         await test.save();
 
@@ -281,12 +284,9 @@ const listTests = async (req, res) => {
         }
 
         const query = { courseId };
-        if (role === 'student') {
-            query.isActive = true;
-        }
 
         const tests = await Test.find(query)
-            .sort({ createdAt: -1 })
+            .sort({ isActive: -1, createdAt: -1 })
             .lean();
 
         return res.status(200).json({ tests: tests.map(toPublicTestListItem) });
@@ -498,7 +498,11 @@ const submitAttempt = async (req, res) => {
         });
 
         const recommendedDifficulty = score >= 80 ? 'hard' : score <= 50 ? 'easy' : 'medium';
-        const recommendations = await Test.find({ courseId: test.courseId, difficulty: recommendedDifficulty })
+        const recommendations = await Test.find({
+            courseId: test.courseId,
+            difficulty: recommendedDifficulty,
+            isActive: { $ne: false },
+        })
             .sort({ createdAt: -1 })
             .limit(5)
             .lean();

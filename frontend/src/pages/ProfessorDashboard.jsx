@@ -74,11 +74,11 @@ const ProfessorDashboard = () => {
   const [practiceGenerate, setPracticeGenerate] = useState({ count: 10, instructions: '' });
   const [practiceGenerating, setPracticeGenerating] = useState(false);
   const [practiceTestMessage, setPracticeTestMessage] = useState('');
+  const [practiceStatusNotice, setPracticeStatusNotice] = useState(null);
+  const [practiceStatusUpdating, setPracticeStatusUpdating] = useState({});
   const [practiceResults, setPracticeResults] = useState([]);
   const [practiceResultsLoading, setPracticeResultsLoading] = useState(false);
   const [showPracticeStats, setShowPracticeStats] = useState(false);
-  const [practiceLeaderboard, setPracticeLeaderboard] = useState([]);
-  const [practiceLeaderboardLoading, setPracticeLeaderboardLoading] = useState(false);
   const [practiceLeaderboardTestId, setPracticeLeaderboardTestId] = useState('');
 
   useEffect(() => {
@@ -162,7 +162,6 @@ const ProfessorDashboard = () => {
       }
 
       fetchPracticeResults();
-      if (showPracticeStats) fetchPracticeLeaderboard();
     };
 
     on('practice-updated', handlePracticeUpdated);
@@ -175,13 +174,42 @@ const ProfessorDashboard = () => {
     const testId = test?._id;
     if (!testId) return;
 
+    const prevActive = test?.isActive !== false;
+
+    setPracticeStatusNotice(null);
+    setPracticeStatusUpdating((prev) => ({ ...prev, [testId]: true }));
+    setPracticeTests((prev) =>
+      prev.map((item) => (String(item._id) === String(testId) ? { ...item, isActive: Boolean(nextActive) } : item))
+    );
+
     try {
       const token = localStorage.getItem('token');
       const config = { headers: { Authorization: `Bearer ${token}` } };
-      await axios.patch(`${API_BASE}/api/tests/${testId}/active`, { isActive: Boolean(nextActive) }, config);
+      const res = await axios.patch(
+        `${API_BASE}/api/tests/${testId}/active`,
+        { isActive: Boolean(nextActive) },
+        config
+      );
+      const resolvedActive = res?.data?.test?.isActive !== false;
+      setPracticeTests((prev) =>
+        prev.map((item) => (String(item._id) === String(testId) ? { ...item, isActive: resolvedActive } : item))
+      );
+      setPracticeStatusNotice({
+        type: 'success',
+        text: `"${test?.title || 'Test'}" is now ${resolvedActive ? 'Active' : 'Inactive'}.`,
+      });
       fetchPracticeTests();
     } catch (err) {
+      setPracticeTests((prev) =>
+        prev.map((item) => (String(item._id) === String(testId) ? { ...item, isActive: prevActive } : item))
+      );
+      setPracticeStatusNotice({
+        type: 'error',
+        text: err.response?.data?.message || 'Failed to update test status.',
+      });
       setPracticeTestMessage(err.response?.data?.message || 'Failed to update test status.');
+    } finally {
+      setPracticeStatusUpdating((prev) => ({ ...prev, [testId]: false }));
     }
   };
 
@@ -193,13 +221,6 @@ const ProfessorDashboard = () => {
       setPracticeLeaderboardTestId(practiceTests[0]._id);
     }
   }, [showPracticeStats, activeCourseId, practiceLeaderboardTestId, practiceTests]);
-
-  useEffect(() => {
-    if (!showPracticeStats) return;
-    if (!activeCourseId || activeCourseId === 'all') return;
-    if (!practiceLeaderboardTestId) return;
-    fetchPracticeLeaderboard();
-  }, [showPracticeStats, activeCourseId, practiceLeaderboardTestId]);
 
   const fetchCourses = async () => {
     try {
@@ -468,35 +489,50 @@ const ProfessorDashboard = () => {
     }
   };
 
-  const fetchPracticeLeaderboard = async (testIdOverride, courseIdOverride) => {
-    const targetCourseId = String(courseIdOverride || activeCourseId || '').trim();
-    if (!targetCourseId || targetCourseId === 'all') {
-      setPracticeLeaderboard([]);
-      return;
-    }
+  const openPracticeAnalytics = (test) => {
+    if (!test?._id) return;
 
-    const targetTestId = String(testIdOverride || practiceLeaderboardTestId || '').trim();
-    if (!targetTestId) {
-      setPracticeLeaderboard([]);
-      return;
-    }
+    setShowPracticeStats(true);
+    setPracticeLeaderboardTestId(String(test._id));
+    fetchPracticeResults();
+  };
 
-    try {
-      setPracticeLeaderboardLoading(true);
-      const token = localStorage.getItem('token');
-      const config = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.get(
-        `${API_BASE}/api/tests/leaderboard?courseId=${encodeURIComponent(targetCourseId)}&testId=${encodeURIComponent(
-          targetTestId
-        )}&limit=20`,
-        config
-      );
-      setPracticeLeaderboard(Array.isArray(res.data?.leaderboard) ? res.data.leaderboard : []);
-    } catch (err) {
-      setPracticeLeaderboard([]);
-    } finally {
-      setPracticeLeaderboardLoading(false);
-    }
+  const getPracticeAnalytics = (attempts) => {
+    const validAttempts = Array.isArray(attempts)
+      ? attempts.filter((attempt) => Number.isFinite(Number(attempt?.score)))
+      : [];
+    const orderedAttempts = [...validAttempts].sort((a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0));
+    const totalAttempts = validAttempts.length;
+    const totalScore = validAttempts.reduce((sum, attempt) => sum + Number(attempt?.score || 0), 0);
+    const totalTime = validAttempts.reduce((sum, attempt) => sum + Number(attempt?.timeTakenSeconds || 0), 0);
+    const passingAttempts = validAttempts.filter((attempt) => Number(attempt?.score || 0) >= 70).length;
+
+    const weakAreaCounts = new Map();
+    validAttempts.forEach((attempt) => {
+      (Array.isArray(attempt?.weakAreas) ? attempt.weakAreas : []).forEach((area) => {
+        const normalized = String(area || '').trim();
+        if (!normalized) return;
+        weakAreaCounts.set(normalized, (weakAreaCounts.get(normalized) || 0) + 1);
+      });
+    });
+
+    return {
+      totalAttempts,
+      averageScore: totalAttempts ? Math.round(totalScore / totalAttempts) : 0,
+      bestScore: totalAttempts ? Math.max(...validAttempts.map((attempt) => Number(attempt?.score || 0))) : 0,
+      averageTime: totalAttempts ? Math.round(totalTime / totalAttempts) : 0,
+      passRate: totalAttempts ? Math.round((passingAttempts / totalAttempts) * 100) : 0,
+      recentTrend: orderedAttempts.slice(-8).map((attempt, index) => ({
+        label: `A${index + 1}`,
+        score: Number(attempt?.score || 0),
+        date: attempt?.createdAt ? new Date(attempt.createdAt).toLocaleDateString() : '',
+      })),
+      recentAttempts: orderedAttempts.slice(-12).reverse(),
+      weakAreas: Array.from(weakAreaCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([area, count]) => ({ area, count })),
+    };
   };
 
   const createAssignment = async () => {
@@ -1834,12 +1870,10 @@ const ProfessorDashboard = () => {
                   const next = !showPracticeStats;
                   setShowPracticeStats(next);
                   if (next && !practiceLeaderboardTestId && Array.isArray(practiceTests) && practiceTests.length > 0) {
-                    const first = practiceTests[0]._id;
-                    setPracticeLeaderboardTestId(first);
-                    fetchPracticeLeaderboard(first, activeCourseId);
+                    setPracticeLeaderboardTestId(practiceTests[0]._id);
                   }
                   if (!next) {
-                    setPracticeLeaderboard([]);
+                    setPracticeLeaderboardTestId('');
                   }
                 }}
               >
@@ -1849,8 +1883,8 @@ const ProfessorDashboard = () => {
               {showPracticeStats && (
                 <div style={{ marginTop: '1rem', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                    <h3 className="text-lg font-semibold">Leaderboard</h3>
-                    <button className="btn-secondary" onClick={fetchPracticeLeaderboard}>
+                    <h3 className="text-lg font-semibold">Analytics</h3>
+                    <button className="btn-secondary" onClick={fetchPracticeResults}>
                       Refresh
                     </button>
                   </div>
@@ -1874,47 +1908,113 @@ const ProfessorDashboard = () => {
                   </div>
 
                   {!practiceLeaderboardTestId ? (
-                    <p style={{ color: 'var(--muted)' }}>Select a quiz to view its leaderboard.</p>
-                  ) : practiceLeaderboardLoading ? (
-                    <p style={{ color: 'var(--muted)' }}>Loading leaderboard...</p>
-                  ) : practiceLeaderboard.length === 0 ? (
-                    <p style={{ color: 'var(--muted)' }}>No attempts yet.</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      {practiceLeaderboard.map((row, idx) => (
-                        <div
-                          key={row.studentId || idx}
-                          style={{
-                            display: 'grid',
-                            gridTemplateColumns: '52px 1.4fr 0.8fr 0.8fr 0.8fr',
-                            gap: '0.75rem',
-                            alignItems: 'center',
-                            padding: '0.75rem',
-                            borderRadius: '10px',
-                            border: '1px solid var(--border)',
-                            background: 'rgba(255, 255, 255, 0.03)',
-                          }}
-                        >
-                          <div style={{ fontWeight: 700, color: 'var(--muted)' }}>#{idx + 1}</div>
-                          <div>
-                            <div style={{ fontWeight: 700 }}>{row.student?.name || 'Student'}</div>
-                            {row.student?.email ? (
-                              <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{row.student.email}</div>
-                            ) : null}
+                    <p style={{ color: 'var(--muted)' }}>Select a quiz to view analytics.</p>
+                  ) : practiceResultsLoading ? (
+                    <p style={{ color: 'var(--muted)' }}>Loading recent attempts...</p>
+                  ) : (() => {
+                    const selectedAttempts = practiceResults.filter(
+                      (attempt) => String(attempt?.test?._id) === String(practiceLeaderboardTestId)
+                    );
+                    const analytics = getPracticeAnalytics(selectedAttempts);
+
+                    if (selectedAttempts.length === 0) {
+                      return <p style={{ color: 'var(--muted)' }}>No attempts yet for this quiz.</p>;
+                    }
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+                          {[
+                            { label: 'Attempts', value: analytics.totalAttempts },
+                            { label: 'Average score', value: `${analytics.averageScore}%` },
+                            { label: 'Best score', value: `${analytics.bestScore}%` },
+                            { label: 'Pass rate', value: `${analytics.passRate}%` },
+                            { label: 'Avg. time', value: analytics.averageTime ? `${analytics.averageTime}s` : '0s' },
+                          ].map((item) => (
+                            <div
+                              key={item.label}
+                              style={{
+                                padding: '0.9rem',
+                                borderRadius: '12px',
+                                border: '1px solid var(--border)',
+                                background: 'rgba(255, 255, 255, 0.03)',
+                              }}
+                            >
+                              <div style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: '0.35rem' }}>{item.label}</div>
+                              <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{item.value}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                          <div style={{ padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.03)' }}>
+                            <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Score trend</h4>
+                            {analytics.recentTrend.length === 0 ? (
+                              <p style={{ color: 'var(--muted)' }}>No score trend available.</p>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={220}>
+                                <LineChart data={analytics.recentTrend}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                                  <XAxis dataKey="label" stroke="var(--muted)" />
+                                  <YAxis domain={[0, 100]} stroke="var(--muted)" />
+                                  <Tooltip />
+                                  <Line type="monotone" dataKey="score" stroke="#4F8CFF" strokeWidth={3} dot={{ r: 4 }} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            )}
                           </div>
-                          <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
-                            Attempts: <strong style={{ color: 'var(--text-main)' }}>{row.attempts}</strong>
-                          </div>
-                          <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
-                            Avg: <strong style={{ color: 'var(--text-main)' }}>{Number(row.avgScore ?? 0)}%</strong>
-                          </div>
-                          <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
-                            Best: <strong style={{ color: 'var(--text-main)' }}>{Number(row.bestScore ?? 0)}%</strong>
+
+                          <div style={{ padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.03)' }}>
+                            <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Common weak areas</h4>
+                            {analytics.weakAreas.length === 0 ? (
+                              <p style={{ color: 'var(--muted)' }}>No weak areas recorded yet.</p>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={220}>
+                                <BarChart data={analytics.weakAreas} layout="vertical">
+                                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                                  <XAxis type="number" allowDecimals={false} stroke="var(--muted)" />
+                                  <YAxis dataKey="area" type="category" width={120} stroke="var(--muted)" />
+                                  <Tooltip />
+                                  <Bar dataKey="count" fill="#FFB347" radius={[0, 8, 8, 0]} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            )}
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
+
+                        <div>
+                          <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Recent attempts</h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            {analytics.recentAttempts.map((attempt) => (
+                              <div
+                                key={attempt.attemptId}
+                                style={{
+                                  padding: '0.9rem',
+                                  borderRadius: '12px',
+                                  border: '1px solid var(--border)',
+                                  background: 'rgba(255, 255, 255, 0.03)',
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                                  <div>
+                                    <strong>{attempt.student?.name || attempt.student?.email || 'Student'}</strong>
+                                    {attempt.student?.email ? <span style={{ color: 'var(--muted)' }}> · {attempt.student.email}</span> : null}
+                                    <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                                      Score: {attempt.score}%
+                                      {attempt.createdAt ? ` • ${new Date(attempt.createdAt).toLocaleString()}` : ''}
+                                    </div>
+                                  </div>
+                                  <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                                    Weak areas: {Array.isArray(attempt.weakAreas) && attempt.weakAreas.length > 0 ? attempt.weakAreas.join(', ') : '—'}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -2062,6 +2162,27 @@ const ProfessorDashboard = () => {
                 <p style={{ marginTop: '0.75rem', color: 'var(--muted)' }}>{practiceTestMessage}</p>
               )}
 
+              {practiceStatusNotice?.text && (
+                <div
+                  style={{
+                    marginTop: '0.75rem',
+                    padding: '0.7rem 0.9rem',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border)',
+                    background:
+                      practiceStatusNotice.type === 'success'
+                        ? 'rgba(52, 199, 89, 0.14)'
+                        : 'rgba(255, 59, 48, 0.14)',
+                    color: practiceStatusNotice.type === 'success' ? '#6DFFB2' : '#FF9E96',
+                    fontWeight: 600,
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {practiceStatusNotice.text}
+                </div>
+              )}
+
               <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
                   <h3 className="text-lg font-semibold">Tests</h3>
@@ -2097,10 +2218,15 @@ const ProfessorDashboard = () => {
 
                               <button
                                 className={t.isActive === false ? 'btn-primary' : 'btn-secondary'}
+                                disabled={Boolean(practiceStatusUpdating[t._id])}
                                 onClick={() => setPracticeTestActive(t, t.isActive === false)}
                                 title={t.isActive === false ? 'Make this test available to students' : 'Prevent students from taking this test'}
                               >
-                                {t.isActive === false ? 'Set Active' : 'Set Inactive'}
+                                {practiceStatusUpdating[t._id]
+                                  ? 'Updating...'
+                                  : t.isActive === false
+                                    ? 'Set Active'
+                                    : 'Set Inactive'}
                               </button>
                             </div>
                             {Array.isArray(t.topics) && t.topics.length > 0 && (
@@ -2112,12 +2238,9 @@ const ProfessorDashboard = () => {
                             <div style={{ marginTop: '0.75rem' }}>
                               <button
                                 className="btn-secondary"
-                                onClick={() => {
-                                  setShowPracticeStats(true);
-                                  setPracticeLeaderboardTestId(t._id);
-                                  fetchPracticeResults();
-                                  fetchPracticeLeaderboard(t._id, t.courseId);
-                                }}
+                                type="button"
+                                aria-label={`View analytics for ${t.title}`}
+                                onClick={() => openPracticeAnalytics(t)}
                               >
                                 View analytics
                               </button>

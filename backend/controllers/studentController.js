@@ -128,7 +128,23 @@ const getLearningPath = async (req, res) => {
             const response = await axios.post(pythonServiceUrl, studentStats);
             res.status(200).json(response.data);
         } catch (error) {
-            res.status(503).json({ message: "AI personalization engine offline. Please start local AI microservice." });
+            const weakTopics = Array.isArray(profile.weak_topics) ? profile.weak_topics.filter(Boolean) : [];
+            const fallbackTopics = weakTopics.length > 0 ? weakTopics.slice(0, 3) : ['State Management', 'Problem Solving', 'Core Concepts'];
+            const quizScores = Object.values(profile.quiz_scores || {});
+            const averageScore = quizScores.length
+                ? Math.round(quizScores.reduce((sum, score) => sum + Number(score || 0), 0) / quizScores.length)
+                : 0;
+
+            res.status(200).json({
+                next_best_topic: fallbackTopics[0],
+                topics_to_revise: fallbackTopics,
+                practice_questions: [
+                    `Explain ${fallbackTopics[0]} in your own words.`,
+                    `Write one example that shows how ${fallbackTopics[0]} is used in practice.`,
+                ],
+                adaptive_message: `AI personalization is currently unavailable, so this is a fallback plan based on your stored progress${averageScore ? ` and an average quiz score of ${averageScore}%` : ''}.`,
+                fallback: true,
+            });
         }
     } catch (error) {
         res.status(500).json({ message: error.message });
