@@ -2,6 +2,7 @@ const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
+const { registerLoginEvent } = require('../services/progressService');
 
 const ensureDbConnected = () => mongoose.connection.readyState === 1;
 
@@ -80,6 +81,12 @@ const loginForRole = (role) => async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        if (role === 'student') {
+            registerLoginEvent(user._id).catch((error) => {
+                console.warn('Failed to register student login event:', error.message);
+            });
         }
 
         return res.json({

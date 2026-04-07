@@ -13,3 +13,5 @@ python-multipart
 pydantic
 langchain-text-splitters
 langchain-groq
+pillow
+pytesseract

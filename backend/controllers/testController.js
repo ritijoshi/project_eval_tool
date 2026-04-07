@@ -5,6 +5,7 @@ const Attempt = require('../models/Attempt');
 const Course = require('../models/Course');
 const User = require('../models/User');
 const { getAiServiceUrl } = require('../config/services');
+const { recomputeStudentCourseProgress } = require('../services/progressService');
 
 const AI_BASE = getAiServiceUrl();
 
@@ -528,6 +529,16 @@ const submitAttempt = async (req, res) => {
                 studentId: String(studentId),
                 timestamp: new Date().toISOString(),
             });
+        }
+
+        try {
+            await recomputeStudentCourseProgress({
+                studentId,
+                courseId: test.courseId,
+                includeAiInsights: false,
+            });
+        } catch (progressErr) {
+            console.warn('Progress update failed after attempt submission:', progressErr.message);
         }
 
         return res.status(201).json({

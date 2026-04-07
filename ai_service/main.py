@@ -68,6 +68,12 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
 
+class MultimodalChatResponse(BaseModel):
+    reply: str
+    transcript: str = ""
+    extracted_text: str = ""
+    attachments: List[Dict] = []
+
 class PersonalizeRequest(BaseModel):
     quiz_scores: Dict[str, int]
     weak_topics: List[str]
@@ -121,6 +127,14 @@ try:
     LLM_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Groq LLM integration unavailable ({e}). Mock AI will be used.")
+
+IMAGE_TO_TEXT_AVAILABLE = False
+try:
+    from PIL import Image
+    import pytesseract
+    IMAGE_TO_TEXT_AVAILABLE = True
+except ImportError:
+    pass
 
 def get_vector_store():
     if not VECTORS_AVAILABLE: return None
@@ -421,7 +435,17 @@ def extract_text_from_file(file_location: str, filename: str) -> str:
                 pass
             return ""
 
-    if lower.endswith((".mp3", ".wav", ".m4a")):
+    if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")):
+        if not IMAGE_TO_TEXT_AVAILABLE:
+            return ""
+        try:
+            image = Image.open(file_location)
+            text = pytesseract.image_to_string(image)
+            return str(text or "").strip()
+        except Exception:
+            return ""
+
+    if lower.endswith((".mp3", ".wav", ".m4a", ".webm", ".ogg", ".mp4")):
         # Audio transcription is optional; supported when openai-whisper is installed.
         try:
             import whisper
@@ -502,6 +526,188 @@ def retrieve_course_context(course_key: str, query: str, k: int = 4) -> List[str
         return top
     except Exception:
         return []
+
+def parse_history_payload(history_value) -> List[Dict[str, str]]:
+    if isinstance(history_value, list):
+        source = history_value
+    else:
+        try:
+            source = json.loads(history_value or "[]")
+        except Exception:
+            source = []
+
+    history_messages = []
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if not text:
+            continue
+        history_messages.append({
+            "sender": "agent" if item.get("sender") == "agent" else "user",
+            "text": text,
+        })
+    return history_messages[-40:]
+
+def extract_attachment_records(files: List[UploadFile], temp_dir: str) -> List[Dict[str, str]]:
+    records = []
+    for uploaded in files or []:
+        filename = uploaded.filename or "file"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename)
+        file_location = os.path.join(temp_dir, safe_name)
+
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(uploaded.file, buffer)
+
+        text = extract_text_from_file(file_location, filename)
+        lower = filename.lower()
+        if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")):
+            file_type = "image"
+        elif lower.endswith((".mp3", ".wav", ".m4a", ".webm", ".ogg")):
+            file_type = "audio"
+        else:
+            file_type = "document"
+
+        records.append({
+            "filename": filename,
+            "file_type": file_type,
+            "text": text,
+            "path": file_location,
+        })
+    return records
+
+def build_attachment_context(attachment_records: List[Dict[str, str]]) -> str:
+    sections = []
+    for record in attachment_records or []:
+        text = str(record.get("text") or "").strip()
+        if not text:
+            text = "No extractable text found. Use the attachment metadata and visual context if applicable."
+        sections.append(
+            f"[{record.get('file_type', 'file').upper()}] {record.get('filename', 'file')}\n{text[:1800]}"
+        )
+    return "\n\n".join(sections).strip()
+
+def generate_course_chat_reply(
+    course_key: str,
+    message: str,
+    history: List[Dict[str, str]],
+    student_level: str = "intermediate",
+    professor_style: Optional[str] = None,
+    attachment_context: str = "",
+) -> ChatResponse:
+    course_key = normalize_course_key(course_key)
+    style_from_store = load_course_style(course_key)
+    teaching_style = str(professor_style or "").strip() or style_from_store or ""
+    query = str(message or "").strip()
+    if attachment_context:
+        query = f"{query}\n\nUploaded attachment context:\n{attachment_context}"
+
+    context_chunks = retrieve_course_context(course_key, query or message, k=4)
+    context_text = "\n\n---\n\n".join(context_chunks).strip()
+
+    if not context_text and attachment_context:
+        context_chunks = [attachment_context]
+        context_text = attachment_context
+
+    if not context_text:
+        return ChatResponse(
+            reply="I can help, but I don't see any course materials for this course yet. Ask your professor to upload materials first."
+        )
+
+    if not groq_llm_enabled():
+        top_chunk = context_chunks[0] if context_chunks else ""
+        response_parts = [
+            f"📚 **Course Material Response**\n",
+            f"Your question: \"{message}\"\n",
+        ]
+
+        if top_chunk:
+            response_parts.append(f"**Relevant Course Material:**\n{top_chunk[:600]}...\n")
+
+        if attachment_context:
+            response_parts.append(f"**Uploaded File Context:**\n{attachment_context[:900]}\n")
+
+        if teaching_style:
+            response_parts.append(f"**Professor's Teaching Approach:**\n{teaching_style[:300]}\n")
+
+        level_guidance = {
+            "beginner": "Focus on understanding the basic concepts and definitions first before diving into implementation details.",
+            "intermediate": "Look at how these concepts apply in practical scenarios and explore the connections between different topics.",
+            "advanced": "Consider edge cases, performance implications, and how this concept integrates with the broader system design.",
+        }
+
+        response_parts.append(
+            f"**For Your Level ({student_level}):**\n{level_guidance.get(student_level, 'Study this material carefully.')}\n"
+        )
+
+        if len(context_chunks) > 1:
+            response_parts.append(
+                f"**Additional Course Materials Available:**\n"
+                f"- {context_chunks[1][:100]}...\n"
+                f"- {context_chunks[2][:100] if len(context_chunks) > 2 else 'More resources in your course'}\n"
+            )
+
+        response_parts.append("\n💡 **Tip:** For the most advanced AI analysis, configure a GROQ API key in your .env file.")
+        return ChatResponse(reply="".join(response_parts))
+
+    retriever = None
+    if huggingface_embeddings_enabled() and course_faiss_exists(course_key):
+        embeddings = HuggingFaceEmbeddings()
+        vector_store = FAISS.load_local(course_faiss_path(course_key), embeddings, allow_dangerous_deserialization=True)
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+
+    system_prompt = (
+        "You are an expert AI teaching assistant. Answer the student's question using the provided course context. "
+        "Mimic the professor's teaching style as closely as possible.\n\n"
+        f"Professor teaching style guidelines:\n{teaching_style or 'Not provided.'}\n\n"
+        "Course material context:\n{context}\n\n"
+        "Rules:\n"
+        "1) Explain step-by-step.\n"
+        "2) Include practical examples and analogies when helpful.\n"
+        "3) Adapt depth to the student level. If beginner, keep definitions simple; "
+        "if intermediate/advanced, go deeper into technical specifics.\n"
+        "4) If the answer is not in the context, say so and suggest where in the materials to look.\n"
+        f"5) Student level: '{student_level}'."
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+    ])
+
+    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.7)
+
+    chat_history_messages = []
+    for msg in history or []:
+        if VECTORS_AVAILABLE:
+            if msg.get("sender") == "user":
+                chat_history_messages.append(HumanMessage(content=msg.get("text", "")))
+            elif msg.get("sender") == "agent":
+                chat_history_messages.append(AIMessage(content=msg.get("text", "")))
+
+    if not retriever:
+        return ChatResponse(
+            reply=(
+                "I found the relevant course context, but I can't run FAISS retrieval in this environment. "
+                "I'll still answer using the retrieved snippet.\n\n"
+                f"Snippet: {context_chunks[0][:600]}..."
+            )
+        )
+
+    rag_chain = (
+        {
+            "context": retriever,
+            "input": RunnablePassthrough(),
+            "chat_history": lambda _: chat_history_messages,
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    response = rag_chain.invoke(message)
+    return ChatResponse(reply=response)
 
 def _extract_json_array(text: str) -> Optional[List[Dict]]:
     try:
@@ -1163,6 +1369,94 @@ async def course_chat(req: CourseChatRequest):
 
     response = rag_chain.invoke(req.message)
     return ChatResponse(reply=response)
+
+@app.post("/chat/voice", response_model=MultimodalChatResponse)
+async def chat_voice(
+    course_key: str = Form(...),
+    student_level: str = Form("intermediate"),
+    message: str = Form(""),
+    history: str = Form("[]"),
+    audio: UploadFile = File(...),
+):
+    course_key = normalize_course_key(course_key)
+    temp_dir = f"temp_voice_{course_key}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        filename = audio.filename or "voice.webm"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename)
+        file_location = os.path.join(temp_dir, safe_name)
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(audio.file, buffer)
+
+        transcript = extract_text_from_file(file_location, filename)
+        final_message = str(message or transcript or "").strip()
+        reply = generate_course_chat_reply(
+            course_key=course_key,
+            message=final_message or transcript or "Transcribe and answer this voice message.",
+            history=parse_history_payload(history),
+            student_level=student_level or "intermediate",
+        )
+
+        return MultimodalChatResponse(
+            reply=reply.reply,
+            transcript=transcript,
+            extracted_text=transcript,
+            attachments=[{
+                "filename": filename,
+                "file_type": "audio",
+                "text": transcript,
+            }],
+        )
+    finally:
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+@app.post("/chat/upload", response_model=MultimodalChatResponse)
+async def chat_upload(
+    course_key: str = Form(...),
+    student_level: str = Form("intermediate"),
+    message: str = Form(""),
+    history: str = Form("[]"),
+    files: List[UploadFile] = File(...),
+):
+    course_key = normalize_course_key(course_key)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    temp_dir = f"temp_upload_{course_key}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        attachment_records = extract_attachment_records(files, temp_dir)
+        attachment_context = build_attachment_context(attachment_records)
+        prompt = str(message or "Analyze the attached file(s) in course context.").strip()
+        reply = generate_course_chat_reply(
+            course_key=course_key,
+            message=prompt,
+            history=parse_history_payload(history),
+            student_level=student_level or "intermediate",
+            attachment_context=attachment_context,
+        )
+
+        extracted_text = "\n\n".join([record.get("text", "") for record in attachment_records if record.get("text")]).strip()
+        return MultimodalChatResponse(
+            reply=reply.reply,
+            transcript="",
+            extracted_text=extracted_text,
+            attachments=[{
+                "filename": record.get("filename", "file"),
+                "file_type": record.get("file_type", "document"),
+                "text": record.get("text", ""),
+            } for record in attachment_records],
+        )
+    finally:
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 @app.post("/personalize", response_model=PersonalizeResponse)
 async def generate_personalization(req: PersonalizeRequest):

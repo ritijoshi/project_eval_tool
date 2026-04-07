@@ -3,6 +3,7 @@ const path = require('path');
 const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const Course = require('../models/Course');
+const { recomputeStudentCourseProgress } = require('../services/progressService');
 
 const ensureDbConnected = () => mongoose.connection.readyState === 1;
 
@@ -75,6 +76,18 @@ const createAssignment = async (req, res) => {
                     timestamp: new Date().toISOString(),
                 });
             });
+        }
+
+        if (Array.isArray(course.students) && course.students.length > 0) {
+            await Promise.allSettled(
+                course.students.map((studentId) =>
+                    recomputeStudentCourseProgress({
+                        studentId,
+                        courseId,
+                        includeAiInsights: false,
+                    })
+                )
+            );
         }
 
         return res.status(201).json({ message: 'Assignment created.', assignment });
@@ -236,6 +249,16 @@ const submitAssignment = async (req, res) => {
                 submissionId: String(submission._id),
                 timestamp: new Date().toISOString(),
             });
+        }
+
+        try {
+            await recomputeStudentCourseProgress({
+                studentId,
+                courseId: assignment.course,
+                includeAiInsights: false,
+            });
+        } catch (progressErr) {
+            console.warn('Progress update failed after assignment submission:', progressErr.message);
         }
 
         return res.status(201).json({ message: 'Submission received.', submission });
@@ -400,6 +423,16 @@ const gradeSubmission = async (req, res) => {
 
         submission.feedback = String(feedback || '').trim();
         await submission.save();
+
+        try {
+            await recomputeStudentCourseProgress({
+                studentId: submission.student,
+                courseId: assignment.course?._id || assignment.course,
+                includeAiInsights: false,
+            });
+        } catch (progressErr) {
+            console.warn('Progress update failed after grading:', progressErr.message);
+        }
 
         return res.status(200).json({ message: 'Submission graded.', submission });
     } catch (error) {

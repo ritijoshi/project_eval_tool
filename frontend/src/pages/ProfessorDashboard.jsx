@@ -16,6 +16,8 @@ const ProfessorDashboard = () => {
   const navigate = useNavigate();
   const { on, off } = useWebSocket();
   const [analytics, setAnalytics] = useState(null);
+  const [courseProgressAnalytics, setCourseProgressAnalytics] = useState(null);
+  const [courseProgressLoading, setCourseProgressLoading] = useState(false);
   const [filterTopic, setFilterTopic] = useState('All');
   const [filterStudent, setFilterStudent] = useState('All');
   const [selectedStudent, setSelectedStudent] = useState(null);
@@ -99,6 +101,25 @@ const ProfessorDashboard = () => {
         console.error("Failed to fetch analytics", err);
       }
     };
+
+    const fetchCourseProgressAnalytics = async () => {
+      if (!activeCourseId || activeCourseId === 'all') {
+        setCourseProgressAnalytics(null);
+        return;
+      }
+
+      try {
+        setCourseProgressLoading(true);
+        const token = localStorage.getItem('token');
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        const res = await axios.get(`${API_BASE}/api/analytics/course/${activeCourseId}`, config);
+        setCourseProgressAnalytics(res.data || null);
+      } catch (err) {
+        setCourseProgressAnalytics(null);
+      } finally {
+        setCourseProgressLoading(false);
+      }
+    };
     const fetchRubrics = async () => {
       try {
         const token = localStorage.getItem('token');
@@ -122,6 +143,7 @@ const ProfessorDashboard = () => {
     };
 
     fetchAnalytics();
+    fetchCourseProgressAnalytics();
     fetchRubrics();
     fetchWeeklyUpdates();
   }, [activeCourseId]);
@@ -1110,6 +1132,80 @@ const ProfessorDashboard = () => {
                     <h2 className="prof-stat-value">{analytics.overview.activeProjects}</h2>
                     <p className="prof-stat-detail">In progress</p>
                 </div>
+            </div>
+
+            <div className="prof-chart-panel" style={{ marginBottom: '1.5rem' }}>
+              <div className="prof-chart-header">
+                <div>
+                  <h3 className="prof-chart-title">Course-Aware Progress Insights</h3>
+                  <p className="prof-chart-desc">At-risk students, mastery signals, and difficult topics</p>
+                </div>
+                <Users size={18} className="text-primary" />
+              </div>
+
+              {courseProgressLoading ? (
+                <p style={{ color: 'var(--muted)' }}>Loading progress insights...</p>
+              ) : !courseProgressAnalytics ? (
+                <p style={{ color: 'var(--muted)' }}>Select a specific course to view detailed progress analytics.</p>
+              ) : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <div className="prof-stat-card" style={{ padding: '0.85rem' }}>
+                      <p className="prof-stat-label">Class Average</p>
+                      <h2 className="prof-stat-value">{Math.round(courseProgressAnalytics.summary?.classAverage || 0)}%</h2>
+                    </div>
+                    <div className="prof-stat-card" style={{ padding: '0.85rem' }}>
+                      <p className="prof-stat-label">At-Risk Students</p>
+                      <h2 className="prof-stat-value">{courseProgressAnalytics.summary?.atRiskCount || 0}</h2>
+                    </div>
+                    <div className="prof-stat-card" style={{ padding: '0.85rem' }}>
+                      <p className="prof-stat-label">Top Performer</p>
+                      <h2 className="prof-stat-value" style={{ fontSize: '1.1rem' }}>
+                        {courseProgressAnalytics.topPerformers?.[0]?.name || 'N/A'}
+                      </h2>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                    <div>
+                      <h4 style={{ marginBottom: '0.5rem' }}>Most Difficult Topics</h4>
+                      {Array.isArray(courseProgressAnalytics.difficultTopics) && courseProgressAnalytics.difficultTopics.length > 0 ? (
+                        <div style={{ display: 'grid', gap: '0.45rem' }}>
+                          {courseProgressAnalytics.difficultTopics.slice(0, 6).map((topic) => (
+                            <div key={topic.topicName} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem', border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
+                              <span>{topic.topicName}</span>
+                              <strong>{Math.round(topic.averageMastery || 0)}%</strong>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ color: 'var(--muted)' }}>No topic-level mastery yet.</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 style={{ marginBottom: '0.5rem' }}>Students Needing Help</h4>
+                      {Array.isArray(courseProgressAnalytics.atRiskStudents) && courseProgressAnalytics.atRiskStudents.length > 0 ? (
+                        <div style={{ display: 'grid', gap: '0.45rem' }}>
+                          {courseProgressAnalytics.atRiskStudents.slice(0, 6).map((student) => (
+                            <div key={student.studentId} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem' }}>
+                                <span>{student.name}</span>
+                                <strong>{Math.round(student.overallProgress || 0)}%</strong>
+                              </div>
+                              <p style={{ marginTop: '0.25rem', color: 'var(--muted)', fontSize: '0.8rem' }}>
+                                Weak: {(student.weakTopics || []).slice(0, 2).join(', ') || 'Not enough data'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ color: 'var(--muted)' }}>No at-risk students detected right now.</p>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="prof-charts-grid">

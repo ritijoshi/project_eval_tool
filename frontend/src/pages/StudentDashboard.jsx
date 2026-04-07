@@ -36,6 +36,10 @@ const StudentDashboard = () => {
   const [isDark, setIsDark] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [learningPath, setLearningPath] = useState(null);
+  const [progressData, setProgressData] = useState(null);
+  const [allCourseProgress, setAllCourseProgress] = useState([]);
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressError, setProgressError] = useState('');
   const [error, setError] = useState('');
   const [evaluationData, setEvaluationData] = useState(null);
   const [submissionText, setSubmissionText] = useState('');
@@ -201,8 +205,12 @@ const StudentDashboard = () => {
     setUserName(user.name || 'Student');
     setEvaluationCourseKey((user.courseKey || 'general').toLowerCase());
 
-    const savedTodos = JSON.parse(localStorage.getItem('studentTodos') || '[]');
-    setTodos(savedTodos);
+    try {
+      const savedTodos = JSON.parse(localStorage.getItem('studentTodos') || '[]');
+      setTodos(Array.isArray(savedTodos) ? savedTodos : []);
+    } catch {
+      setTodos([]);
+    }
   }, []);
 
   useEffect(() => {
@@ -213,6 +221,28 @@ const StudentDashboard = () => {
         const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
         const pathRes = await axios.get(`${API_BASE}/api/student/learning-path${courseQuery}`, config);
         setLearningPath(pathRes.data);
+
+        if (activeCourseId && activeCourseId !== 'all') {
+          axios
+            .post(
+              `${API_BASE}/api/progress/update`,
+              {
+                studentId: JSON.parse(localStorage.getItem('user') || '{}')._id,
+                courseId: activeCourseId,
+                eventType: 'material_view',
+                payload: {
+                  moduleKey: `learning-path:${activeCourseId}`,
+                  materialTitle: 'Adaptive Learning Path',
+                  timeSpentSeconds: 90,
+                  completed: false,
+                },
+              },
+              config
+            )
+            .catch(() => {
+              // Best-effort telemetry only.
+            });
+        }
       } catch (err) {
         console.error(err);
         setError('Failed to fetch learning path.');
@@ -236,6 +266,34 @@ const StudentDashboard = () => {
       return [];
     } finally {
       setUpcomingLoading(false);
+    }
+  };
+
+  const fetchProgressData = async () => {
+    try {
+      setProgressLoading(true);
+      setProgressError('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+
+      if (activeCourseId && activeCourseId !== 'all') {
+        const res = await axios.get(
+          `${API_BASE}/api/progress?courseId=${encodeURIComponent(activeCourseId)}&includeInsights=true`,
+          config
+        );
+        setProgressData(res.data?.progress || null);
+      } else {
+        setProgressData(null);
+      }
+
+      const allRes = await axios.get(`${API_BASE}/api/progress/all-courses`, config);
+      setAllCourseProgress(Array.isArray(allRes.data?.progress) ? allRes.data.progress : []);
+    } catch (err) {
+      setProgressError(err.response?.data?.message || 'Failed to load progress insights.');
+      setProgressData(null);
+      setAllCourseProgress([]);
+    } finally {
+      setProgressLoading(false);
     }
   };
 
@@ -415,6 +473,10 @@ const StudentDashboard = () => {
   }, []);
 
   useEffect(() => {
+    fetchProgressData();
+  }, [activeCourseId]);
+
+  useEffect(() => {
     if (activeTab !== 'dashboard') return;
     // Prevent the dashboard panel from keeping an old scroll position.
     requestAnimationFrame(() => {
@@ -440,9 +502,11 @@ const StudentDashboard = () => {
   }, [practiceSession?.timed, practiceTimeLeft]);
 
   useEffect(() => {
-    if (activeTab !== 'practice') return;
+    if (activeTab !== 'practice' && activeTab !== 'dashboard') return;
     fetchPracticeTests();
-    fetchPracticeHistory();
+    if (activeTab === 'practice') {
+      fetchPracticeHistory();
+    }
   }, [activeTab, activeCourseId]);
 
   useEffect(() => {
@@ -450,7 +514,6 @@ const StudentDashboard = () => {
       if (!data) return;
       if (!activeCourseId || activeCourseId === 'all') return;
       if (data.courseId && String(data.courseId) !== String(activeCourseId)) return;
-      if (activeTab !== 'practice') return;
 
       if (data.kind === 'test-updated' && data.testId) {
         setPracticeTests((prev) =>
@@ -473,7 +536,10 @@ const StudentDashboard = () => {
       }
 
       fetchPracticeTests();
-      fetchPracticeHistory();
+      if (activeTab === 'practice') {
+        fetchPracticeHistory();
+      }
+      fetchProgressData();
     };
 
     on('practice-updated', handlePracticeUpdated);
@@ -512,19 +578,32 @@ const StudentDashboard = () => {
   };
 
   const addTodo = () => {
-    if (!newTodoTitle.trim()) return;
+    const title = String(newTodoTitle || '').trim();
+    if (!title) return;
+
     const newTodo = {
-      id: Date.now(),
-      title: newTodoTitle.trim(),
+      id: `manual:${Date.now()}`,
+      title,
       done: false,
       priority: newTodoPriority,
       createdAt: new Date().toISOString(),
+      source: 'manual',
     };
-    const updatedTodos = [...todos, newTodo];
-    setTodos(updatedTodos);
-    saveTodosToLocalStorage(updatedTodos);
+
+    setTodos((prev) => {
+      const next = [...(Array.isArray(prev) ? prev : []), newTodo];
+      saveTodosToLocalStorage(next);
+      return next;
+    });
+
     setNewTodoTitle('');
     setNewTodoPriority('normal');
+  };
+
+  const handleTodoInputKeyDown = (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    addTodo();
   };
 
   const toggleTodo = (id) => {
@@ -715,6 +794,7 @@ const StudentDashboard = () => {
       if (activeTab === 'courses' && activeCourseId && activeCourseId !== 'all') {
         fetchAssignments();
       }
+      fetchProgressData();
     };
 
     on('assignments-updated', handleAssignmentsUpdated);
@@ -745,6 +825,7 @@ const StudentDashboard = () => {
       markAssignmentTodoCompleted(assignmentId);
       fetchUpcoming();
       fetchAssignments();
+      fetchProgressData();
     } catch (err) {
       setAssignmentStatus((prev) => ({
         ...prev,
@@ -927,6 +1008,93 @@ const StudentDashboard = () => {
         {/* DASHBOARD TAB */}
         {activeTab === 'dashboard' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            <div className="glass-panel">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <h2 className="text-xl font-semibold">Progress Tracking</h2>
+                {progressData?.activityLevel ? (
+                  <span
+                    style={{
+                      padding: '0.35rem 0.65rem',
+                      borderRadius: '9999px',
+                      fontSize: '0.75rem',
+                      textTransform: 'uppercase',
+                      background: progressData.activityLevel === 'high' ? 'rgba(52, 199, 89, 0.18)' : progressData.activityLevel === 'medium' ? 'rgba(255, 193, 7, 0.18)' : 'rgba(255, 59, 48, 0.18)',
+                      color: progressData.activityLevel === 'high' ? '#34C759' : progressData.activityLevel === 'medium' ? '#FFC107' : '#FF3B30',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {progressData.activityLevel} engagement
+                  </span>
+                ) : null}
+              </div>
+
+              {progressLoading ? (
+                <p style={{ color: 'var(--muted)' }}>Calculating your latest progress...</p>
+              ) : progressError ? (
+                <p style={{ color: 'var(--error)' }}>{progressError}</p>
+              ) : (
+                <>
+                  {progressData && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.9rem', marginBottom: '1rem' }}>
+                      <div style={{ padding: '0.9rem', border: '1px solid var(--border)', borderRadius: '12px', background: 'var(--surface-hover)' }}>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Overall Progress</p>
+                        <p style={{ fontSize: '1.35rem', fontWeight: 700 }}>{Math.round(progressData.overallProgress || 0)}%</p>
+                      </div>
+                      <div style={{ padding: '0.9rem', border: '1px solid var(--border)', borderRadius: '12px', background: 'var(--surface-hover)' }}>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Assignments</p>
+                        <p style={{ fontSize: '1.1rem', fontWeight: 700 }}>{Math.round(progressData.assignmentStats?.avgScore || 0)}%</p>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{progressData.assignmentStats?.pending || 0} pending</p>
+                      </div>
+                      <div style={{ padding: '0.9rem', border: '1px solid var(--border)', borderRadius: '12px', background: 'var(--surface-hover)' }}>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Practice Tests</p>
+                        <p style={{ fontSize: '1.1rem', fontWeight: 700 }}>{Math.round(progressData.testStats?.avgScore || 0)}%</p>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{progressData.testStats?.attempts || 0} attempt(s)</p>
+                      </div>
+                      <div style={{ padding: '0.9rem', border: '1px solid var(--border)', borderRadius: '12px', background: 'var(--surface-hover)' }}>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Modules Completed</p>
+                        <p style={{ fontSize: '1.1rem', fontWeight: 700 }}>{progressData.modulesCompleted || 0}/{progressData.totalModules || 0}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {progressData?.weakTopics?.length > 0 ? (
+                    <p style={{ marginBottom: '0.75rem' }}>
+                      You are weak in <strong>{progressData.weakTopics.slice(0, 3).join(', ')}</strong>.
+                    </p>
+                  ) : (
+                    <p style={{ marginBottom: '0.75rem', color: 'var(--muted)' }}>No weak topics detected yet. Keep practicing to build a stronger profile.</p>
+                  )}
+
+                  {progressData?.aiInsights?.recommendations?.length > 0 && (
+                    <div style={{ marginBottom: '0.75rem' }}>
+                      <p className="font-semibold" style={{ marginBottom: '0.35rem' }}>Recommended Next Steps</p>
+                      <ul style={{ margin: 0, paddingLeft: '1.1rem', color: 'var(--muted)' }}>
+                        {progressData.aiInsights.recommendations.slice(0, 3).map((rec, idx) => (
+                          <li key={`${rec}-${idx}`}>{rec}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.8rem' }}>
+                    <p className="font-semibold" style={{ marginBottom: '0.5rem' }}>Course-wise Progress</p>
+                    {allCourseProgress.length === 0 ? (
+                      <p style={{ color: 'var(--muted)' }}>No course progress yet.</p>
+                    ) : (
+                      <div style={{ display: 'grid', gap: '0.45rem' }}>
+                        {allCourseProgress.slice(0, 6).map((row) => (
+                          <div key={`${row.courseId?._id || row.courseId}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ color: 'var(--muted)' }}>{row.courseId?.courseCode || row.courseId?.title || 'Course'}</span>
+                            <strong>{Math.round(row.overallProgress || 0)}%</strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
             {/* Upcoming Deadlines */}
             <div className="glass-panel">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
@@ -1064,7 +1232,54 @@ const StudentDashboard = () => {
                   <Award size={20} style={{ color: 'var(--primary)' }} />
                   <h2 className="text-xl font-semibold">Practice Tests</h2>
                 </div>
-                <p style={{ color: 'var(--muted)' }}>No practice tests available yet.</p>
+                {practiceLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading available practice tests...</p>
+                ) : !activeCourseId || activeCourseId === 'all' ? (
+                  <p style={{ color: 'var(--muted)' }}>Select an active course to view practice tests.</p>
+                ) : practiceTests.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No practice tests available yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceTests.slice(0, 4).map((test) => (
+                      <div
+                        key={test._id}
+                        style={{
+                          padding: '0.75rem 0.9rem',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border)',
+                          background: 'var(--surface-hover)',
+                          display: 'grid',
+                          gridTemplateColumns: '1fr auto',
+                          alignItems: 'center',
+                          gap: '0.5rem',
+                        }}
+                      >
+                        <div>
+                          <p className="font-semibold">{test.title}</p>
+                          <p style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+                            {test.questionCount || 0} questions • {String(test.difficulty || 'medium').toUpperCase()}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setActiveTab('practice')}
+                          style={{ fontSize: '0.8rem', padding: '0.45rem 0.7rem' }}
+                        >
+                          Open
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => setActiveTab('practice')}
+                      style={{ marginTop: '0.25rem' }}
+                    >
+                      View All Practice Tests
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1120,7 +1335,7 @@ const StudentDashboard = () => {
                   placeholder="Add a new task..."
                   value={newTodoTitle}
                   onChange={(e) => setNewTodoTitle(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && addTodo()}
+                  onKeyDown={handleTodoInputKeyDown}
                   className="glass-input"
                   style={{
                     flex: 1,
@@ -1145,6 +1360,7 @@ const StudentDashboard = () => {
                   <option value="urgent">Urgent</option>
                 </select>
                 <button
+                  type="button"
                   onClick={addTodo}
                   style={{
                     padding: '0.75rem 1.5rem',
