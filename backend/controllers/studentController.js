@@ -153,8 +153,21 @@ const getLearningPath = async (req, res) => {
 
 const getLeaderboard = async (req, res) => {
     try {
-        const students = await User.find({ role: 'student' }).select('_id name').lean();
-        const feedbackDocs = await Feedback.find({ status: { $in: ['pending', 'reviewed', 'awaiting_response', 'resolved'] } })
+        const courseId = req.query?.courseId;
+        let studentsFilter = { role: 'student' };
+        let feedbackFilter = { status: { $in: ['pending', 'reviewed', 'awaiting_response', 'resolved'] } };
+
+        if (courseId && courseId !== 'all' && mongoose.Types.ObjectId.isValid(String(courseId))) {
+            const course = await Course.findById(courseId);
+            if (course) {
+                studentsFilter._id = { $in: course.students };
+                const courseKey = String(course.courseCode || '').trim().toLowerCase();
+                feedbackFilter.courseKey = courseKey;
+            }
+        }
+
+        const students = await User.find(studentsFilter).select('_id name').lean();
+        const feedbackDocs = await Feedback.find(feedbackFilter)
             .select('student courseKey aiEvaluation professorReview createdAt')
             .lean();
 

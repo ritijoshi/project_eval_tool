@@ -56,6 +56,5 @@ const courseSchema = new mongoose.Schema(
 );
 
 courseSchema.index({ professor: 1, createdAt: -1 });
-courseSchema.index({ courseCode: 1 }, { unique: true });
 
 module.exports = mongoose.model('Course', courseSchema);

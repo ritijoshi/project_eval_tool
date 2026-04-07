@@ -7,7 +7,24 @@ const User = require('../models/User');
 const Course = require('../models/Course');
 const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
+const Feedback = require('../models/Feedback');
+const { getProfile } = require('../utils/studentProfileStore');
 const { getAiServiceUrl } = require('../config/services');
+
+const parseScoreFromLabel = (scoreLabel) => {
+    const value = String(scoreLabel || '').trim();
+    const match = value.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+    if (match) {
+        const numerator = Number(match[1]);
+        const denominator = Number(match[2]);
+        if (denominator > 0) return Math.round((numerator / denominator) * 100);
+    }
+    const percentMatch = value.match(/(\d+(?:\.\d+)?)\s*%/);
+    if (percentMatch) return Math.round(Number(percentMatch[1]));
+    const numeric = Number(value);
+    if (!Number.isNaN(numeric)) return Math.max(0, Math.min(100, Math.round(numeric)));
+    return null;
+};
 
 const AI_BASE = getAiServiceUrl();
 
@@ -323,7 +340,9 @@ const getAnalytics = async (req, res) => {
         }
 
         const courseIds = courses.map((course) => course._id);
-        if (!courseIds.length) {
+        const courseKeys = courses.map((course) => normalizeCourseKey(course.courseCode)).filter(Boolean);
+
+        if (!courseIds.length && !courseKeys.length) {
             return res.status(200).json({
                 overview: { totalStudents: 0, avgScore: 0, activeProjects: 0 },
                 students: [],
@@ -338,20 +357,34 @@ const getAnalytics = async (req, res) => {
             .lean();
         const assignmentIds = assignments.map((assignment) => assignment._id);
 
-        const studentIds = new Set();
-        courses.forEach((course) => {
-            (course.students || []).forEach((id) => studentIds.add(String(id)));
-        });
-
-        const students = await User.find({ _id: { $in: Array.from(studentIds) } })
-            .select('_id name')
-            .lean();
-
         const submissions = await Submission.find({
             assignment: { $in: assignmentIds },
             isLatest: true,
         })
             .populate('student', 'name')
+            .lean();
+
+        const feedbackDocs = await Feedback.find({ 
+            status: { $in: ['pending', 'reviewed', 'awaiting_response', 'resolved'] },
+            $or: [
+                { courseKey: { $in: courseKeys } },
+                { course: { $in: courseIds } }
+            ]
+        }).select('student courseKey aiEvaluation professorReview createdAt').lean();
+
+        const studentIds = new Set();
+        courses.forEach((course) => {
+            (course.students || []).forEach((id) => studentIds.add(String(id)));
+        });
+        submissions.forEach((sub) => {
+            if (sub.student) studentIds.add(String(sub.student._id || sub.student));
+        });
+        feedbackDocs.forEach((doc) => {
+            if (doc.student) studentIds.add(String(doc.student));
+        });
+
+        const students = await User.find({ _id: { $in: Array.from(studentIds) } })
+            .select('_id name')
             .lean();
 
         const submissionsByStudent = new Map();
@@ -363,6 +396,19 @@ const getAnalytics = async (req, res) => {
             submissionsByStudent.get(studentId).push(submission);
         });
 
+        const scoreByStudent = new Map();
+        feedbackDocs.forEach((doc) => {
+            const studentId = String(doc.student);
+            const base = parseScoreFromLabel(doc?.aiEvaluation?.score) || 0;
+            const adjustment = Number(doc?.professorReview?.scoreAdjustment || 0);
+            const final = Math.max(0, Math.min(100, base + adjustment));
+
+            if (!scoreByStudent.has(studentId)) {
+                scoreByStudent.set(studentId, { scores: [] });
+            }
+            scoreByStudent.get(studentId).scores.push(final);
+        });
+
         const totalAssignments = assignments.length || 0;
         let totalScore = 0;
         let scoredCount = 0;
@@ -372,12 +418,34 @@ const getAnalytics = async (req, res) => {
             const studentSubs = submissionsByStudent.get(studentId) || [];
             const completed = studentSubs.length;
             const scoredSubs = studentSubs.filter((sub) => Number.isFinite(sub.score));
-            const avgScore = scoredSubs.length
+            const subAvgScore = scoredSubs.length
                 ? Math.round(scoredSubs.reduce((sum, sub) => sum + Number(sub.score || 0), 0) / scoredSubs.length)
                 : 0;
 
-            if (scoredSubs.length) {
-                totalScore += avgScore;
+            const profile = getProfile(studentId);
+            const quizScores = Object.values(profile.quiz_scores || {});
+            
+            const scored = scoreByStudent.get(studentId);
+            const feedbackAverage = scored?.scores?.length
+                ? scored.scores.reduce((a, b) => a + b, 0) / scored.scores.length
+                : null;
+            const quizAverage = quizScores.length
+                ? quizScores.reduce((a, b) => a + b, 0) / quizScores.length
+                : null;
+
+            let finalScore = 0;
+            if (feedbackAverage !== null && quizAverage !== null) {
+                finalScore = Math.round(feedbackAverage * 0.7 + quizAverage * 0.3);
+            } else if (feedbackAverage !== null) {
+                finalScore = Math.round(feedbackAverage);
+            } else if (quizAverage !== null) {
+                finalScore = Math.round(quizAverage);
+            } else {
+                finalScore = subAvgScore;
+            }
+
+            if (finalScore > 0 || subAvgScore > 0) {
+                totalScore += finalScore;
                 scoredCount += 1;
             }
 
@@ -386,11 +454,11 @@ const getAnalytics = async (req, res) => {
             return {
                 id: studentId,
                 name: student.name,
-                score: avgScore,
+                score: finalScore,
                 progress,
-                weak: '',
-                weakAreas: [],
-                interactionCount: completed,
+                weak: (profile.weak_topics || []).slice(0, 2).join(', '),
+                weakAreas: profile.weak_topics || [],
+                interactionCount: completed + (scored?.scores?.length || 0),
                 topicScores: {},
             };
         });

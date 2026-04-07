@@ -502,10 +502,14 @@ const StudentDashboard = () => {
   }, [practiceSession?.timed, practiceTimeLeft]);
 
   useEffect(() => {
-    if (activeTab !== 'practice' && activeTab !== 'dashboard') return;
-    fetchPracticeTests();
+    if (activeTab === 'practice' || activeTab === 'dashboard') {
+      fetchPracticeTests();
+    }
     if (activeTab === 'practice') {
       fetchPracticeHistory();
+    }
+    if (activeTab === 'analytics') {
+      fetchLeaderboard();
     }
   }, [activeTab, activeCourseId]);
 
@@ -706,7 +710,8 @@ const StudentDashboard = () => {
       setLeaderboardLoading(true);
       const token = localStorage.getItem('token');
       const config = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.get(`${API_BASE}/api/student/leaderboard`, config);
+      const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+      const res = await axios.get(`${API_BASE}/api/student/leaderboard${courseQuery}`, config);
       setLeaderboard(Array.isArray(res.data?.leaderboard) ? res.data.leaderboard : []);
     } catch (err) {
       console.error(err);

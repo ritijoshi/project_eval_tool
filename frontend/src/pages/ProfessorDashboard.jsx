@@ -49,7 +49,7 @@ const ProfessorDashboard = () => {
   const [courseDeleteStatus, setCourseDeleteStatus] = useState({});
   const [inviteInputs, setInviteInputs] = useState({});
   const [inviteStatus, setInviteStatus] = useState({});
-  const { activeCourseId, activeCourse, isAllCourses, setActiveCourseId } = useActiveCourse();
+  const { activeCourseId, activeCourse, isAllCourses, setActiveCourseId, refreshCourses } = useActiveCourse();
   const [assignments, setAssignments] = useState([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentForm, setAssignmentForm] = useState({
@@ -697,6 +697,7 @@ const ProfessorDashboard = () => {
       setCourseForm({ title: '', description: '' });
       setCourseMessage('Course created successfully.');
       fetchCourses();
+      refreshCourses();
     } catch (err) {
       setCourseMessage(err.response?.data?.message || 'Failed to create course.');
     }
@@ -731,6 +732,7 @@ const ProfessorDashboard = () => {
       }));
       setInviteInputs((prev) => ({ ...prev, [courseId]: '' }));
       fetchCourses();
+      refreshCourses();
     } catch (err) {
       setInviteStatus((prev) => ({
         ...prev,
@@ -760,6 +762,7 @@ const ProfessorDashboard = () => {
 
       setCourseDeleteStatus((prev) => ({ ...prev, [courseId]: 'Deleted.' }));
       fetchCourses();
+      refreshCourses();
     } catch (err) {
       setCourseDeleteStatus((prev) => ({
         ...prev,
