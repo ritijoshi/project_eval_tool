@@ -22,7 +22,7 @@ const createAssignment = async (req, res) => {
 
     try {
         const professorId = req.user?._id;
-        const { title, description, courseId, deadline, rubric } = req.body || {};
+        const { title, description, courseId, deadline, rubric, maxPoints } = req.body || {};
 
         if (!professorId) {
             return res.status(401).json({ message: 'Unauthorized' });
@@ -30,6 +30,16 @@ const createAssignment = async (req, res) => {
 
         if (!title || !courseId || !deadline) {
             return res.status(400).json({ message: 'title, courseId, and deadline are required' });
+        }
+
+        const parsedDeadline = new Date(deadline);
+        if (Number.isNaN(parsedDeadline.getTime())) {
+            return res.status(400).json({ message: 'deadline must be a valid date/time' });
+        }
+
+        const maxPointsNum = Number(maxPoints);
+        if (!Number.isFinite(maxPointsNum) || maxPointsNum <= 0) {
+            return res.status(400).json({ message: 'maxPoints must be a positive number' });
         }
 
         const course = await Course.findById(courseId).select('professor students courseCode');
@@ -47,7 +57,8 @@ const createAssignment = async (req, res) => {
             title: String(title).trim(),
             description: String(description || '').trim(),
             course: courseId,
-            deadline: new Date(deadline),
+            deadline: parsedDeadline,
+            maxPoints: maxPointsNum,
             rubric: String(rubric || '').trim(),
             attachments,
             createdBy: professorId,
@@ -172,6 +183,11 @@ const submitAssignment = async (req, res) => {
             return res.status(404).json({ message: 'Assignment not found' });
         }
 
+        // Hard enforcement: do not accept submissions after deadline (date + time).
+        if (assignment.deadline && new Date() > new Date(assignment.deadline)) {
+            return res.status(403).json({ message: 'Submission deadline has passed' });
+        }
+
         const course = await Course.findById(assignment.course).select('students');
         if (!course) {
             return res.status(404).json({ message: 'Course not found' });
@@ -191,7 +207,7 @@ const submitAssignment = async (req, res) => {
             .lean();
 
         const nextVersion = latest?.version ? latest.version + 1 : 1;
-        const isLate = assignment.deadline ? new Date() > new Date(assignment.deadline) : false;
+        const isLate = false;
 
         if (latest) {
             await Submission.updateMany(
@@ -209,6 +225,18 @@ const submitAssignment = async (req, res) => {
             isLate,
             isLatest: true,
         });
+
+        // Realtime: remove from upcoming deadlines immediately for this student.
+        const io = req.app?.get('io');
+        if (io) {
+            io.to(`user:${studentId}`).emit('assignments-updated', {
+                reason: 'submitted',
+                courseId: String(assignment.course),
+                assignmentId: String(assignmentId),
+                submissionId: String(submission._id),
+                timestamp: new Date().toISOString(),
+            });
+        }
 
         return res.status(201).json({ message: 'Submission received.', submission });
     } catch (error) {
@@ -274,6 +302,10 @@ const listUpcomingAssignments = async (req, res) => {
         const { courseId, limit = 5 } = req.query || {};
         const now = new Date();
 
+        const limitNum = Math.max(1, Math.min(50, Number(limit) || 5));
+        // We may filter out submitted assignments, so fetch a bigger window first.
+        const probeLimit = Math.min(250, limitNum * 5);
+
         let courseIds = [];
         if (courseId) {
             const course = await Course.findById(courseId).select('students');
@@ -293,16 +325,33 @@ const listUpcomingAssignments = async (req, res) => {
             return res.status(200).json({ assignments: [] });
         }
 
-        const assignments = await Assignment.find({
+        const candidates = await Assignment.find({
             course: { $in: courseIds },
             deadline: { $gte: now },
         })
             .populate('course', 'title courseCode')
             .sort({ deadline: 1 })
-            .limit(Number(limit))
+            .limit(probeLimit)
             .lean();
 
-        return res.status(200).json({ assignments });
+        if (!candidates.length) {
+            return res.status(200).json({ assignments: [] });
+        }
+
+        const submitted = await Submission.find({
+            student: studentId,
+            assignment: { $in: candidates.map((a) => a._id) },
+            isLatest: true,
+        })
+            .select('assignment')
+            .lean();
+
+        const submittedIds = new Set(submitted.map((s) => String(s.assignment)));
+        const upcoming = candidates
+            .filter((a) => !submittedIds.has(String(a._id)))
+            .slice(0, limitNum);
+
+        return res.status(200).json({ assignments: upcoming });
     } catch (error) {
         return res.status(500).json({ message: error.message || 'Failed to load upcoming assignments' });
     }
@@ -336,7 +385,19 @@ const gradeSubmission = async (req, res) => {
             return res.status(400).json({ message: 'Submission does not belong to this assignment' });
         }
 
-        submission.score = Number.isFinite(Number(score)) ? Number(score) : null;
+        const maxPointsRaw = Number(assignment.maxPoints);
+        const maxPointsNum = Number.isFinite(maxPointsRaw) && maxPointsRaw > 0 ? maxPointsRaw : 100;
+        const parsedScore = Number(score);
+        if (score === null || score === undefined || String(score).trim() === '') {
+            submission.score = null;
+        } else if (!Number.isFinite(parsedScore)) {
+            return res.status(400).json({ message: 'score must be a number' });
+        } else if (parsedScore < 0 || parsedScore > maxPointsNum) {
+            return res.status(400).json({ message: `score must be between 0 and ${maxPointsNum}` });
+        } else {
+            submission.score = parsedScore;
+        }
+
         submission.feedback = String(feedback || '').trim();
         await submission.save();
 

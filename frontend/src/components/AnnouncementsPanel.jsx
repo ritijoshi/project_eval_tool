@@ -43,6 +43,7 @@ export default function AnnouncementsPanel({ role, activeCourseId, activeCourse 
     scheduledAt: '',
     isPinned: false,
   });
+  const [attachmentFiles, setAttachmentFiles] = useState([]);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('');
 
@@ -140,6 +141,7 @@ export default function AnnouncementsPanel({ role, activeCourseId, activeCourse 
   const resetForm = () => {
     setEditingId('');
     setForm({ title: '', content: '', attachmentsText: '', scheduledAt: '', isPinned: false });
+    setAttachmentFiles([]);
   };
 
   const submit = async () => {
@@ -152,7 +154,7 @@ export default function AnnouncementsPanel({ role, activeCourseId, activeCourse 
       return;
     }
 
-    const payload = {
+    const basePayload = {
       courseId: activeCourseId,
       title: form.title.trim(),
       content: form.content,
@@ -165,18 +167,47 @@ export default function AnnouncementsPanel({ role, activeCourseId, activeCourse 
       setStatus('Scheduled time is invalid.');
       return;
     }
-    if (scheduledIso) payload.scheduledAt = scheduledIso;
+    if (scheduledIso) basePayload.scheduledAt = scheduledIso;
 
     try {
       setSaving(true);
       setStatus('');
 
-      if (editingId) {
-        await axios.patch(`${API_BASE}/api/announcements/${editingId}`, payload, getAuthConfig());
-        setStatus('Announcement updated.');
+      const hasFiles = Array.isArray(attachmentFiles) && attachmentFiles.length > 0;
+
+      if (hasFiles) {
+        const formData = new FormData();
+        Object.entries(basePayload).forEach(([key, value]) => {
+          if (key === 'attachments') {
+            formData.append('attachments', JSON.stringify(value));
+            return;
+          }
+          if (value === undefined || value === null) return;
+          formData.append(key, String(value));
+        });
+        attachmentFiles.forEach((file) => formData.append('files', file));
+
+        if (editingId) {
+          await axios.patch(`${API_BASE}/api/announcements/${editingId}`, formData, {
+            ...getAuthConfig(),
+            headers: { ...getAuthConfig().headers, 'Content-Type': 'multipart/form-data' },
+          });
+          setStatus('Announcement updated.');
+        } else {
+          await axios.post(`${API_BASE}/api/announcements`, formData, {
+            ...getAuthConfig(),
+            headers: { ...getAuthConfig().headers, 'Content-Type': 'multipart/form-data' },
+          });
+          setStatus(scheduledIso ? 'Announcement scheduled.' : 'Announcement posted.');
+        }
       } else {
-        await axios.post(`${API_BASE}/api/announcements`, payload, getAuthConfig());
-        setStatus(scheduledIso ? 'Announcement scheduled.' : 'Announcement posted.');
+        if (editingId) {
+          await axios.patch(`${API_BASE}/api/announcements/${editingId}`, basePayload, getAuthConfig());
+          setStatus('Announcement updated.');
+        } else {
+          await axios.post(`${API_BASE}/api/announcements`, basePayload, getAuthConfig());
+          setStatus(scheduledIso ? 'Announcement scheduled.' : 'Announcement posted.');
+        }
       }
 
       resetForm();
@@ -281,6 +312,23 @@ export default function AnnouncementsPanel({ role, activeCourseId, activeCourse 
               value={form.attachmentsText}
               onChange={(e) => setForm((p) => ({ ...p, attachmentsText: e.target.value }))}
             />
+            <div>
+              <label className="text-muted" style={{ display: 'block', fontSize: '0.85rem', marginBottom: '0.35rem' }}>
+                Upload attachments (PDF, Excel, images)
+              </label>
+              <input
+                type="file"
+                multiple
+                className="glass-input"
+                accept=".pdf,.xls,.xlsx,.csv,image/*"
+                onChange={(e) => setAttachmentFiles(Array.from(e.target.files || []))}
+              />
+              {attachmentFiles.length > 0 ? (
+                <p className="text-muted" style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+                  {attachmentFiles.length} file(s) selected
+                </p>
+              ) : null}
+            </div>
             <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
               <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                 <input
@@ -412,6 +460,26 @@ export default function AnnouncementsPanel({ role, activeCourseId, activeCourse 
                           <li key={url}>
                             <a href={url} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)' }}>
                               {url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {Array.isArray(a.files) && a.files.length > 0 && (
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <p className="text-muted" style={{ marginBottom: '0.25rem' }}>Files</p>
+                      <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+                        {a.files.map((file) => (
+                          <li key={file.url}>
+                            <a
+                              href={`${API_BASE}${file.url}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ color: 'var(--primary)' }}
+                            >
+                              {file.originalName || file.filename}
                             </a>
                           </li>
                         ))}

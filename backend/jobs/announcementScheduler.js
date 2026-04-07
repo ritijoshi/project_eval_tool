@@ -49,7 +49,7 @@ const publishDueAnnouncements = async (io, batchSize = 50) => {
 
   for (const announcement of pendingNotify) {
     try {
-      const course = await Course.findById(announcement.courseId).select('students courseCode');
+      const course = await Course.findById(announcement.courseId).select('students professor courseCode');
       if (!course) {
         await Announcement.updateOne({ _id: announcement._id }, { $set: { notificationsSent: true } });
         continue;
@@ -66,12 +66,26 @@ const publishDueAnnouncements = async (io, batchSize = 50) => {
 
       if (io) {
         const courseKey = String(course.courseCode || '').trim().toLowerCase();
-        io.to(`course:${courseKey}`).emit('announcements-updated', {
+        const payload = {
           reason: 'published',
           courseId: String(course._id),
           courseKey,
           announcementId: String(announcement._id),
           timestamp: new Date().toISOString(),
+        };
+
+        // Course room (used by course chat + anyone who joined).
+        io.to(`course:${courseKey}`).emit('announcements-updated', payload);
+
+        // Personal rooms (used by dashboards that don't join course rooms).
+        const professorId = course.professor ? String(course.professor) : '';
+        if (professorId) {
+          io.to(`user:${professorId}`).emit('announcements-updated', payload);
+        }
+
+        const students = Array.isArray(course.students) ? course.students : [];
+        students.forEach((studentId) => {
+          io.to(`user:${studentId}`).emit('announcements-updated', payload);
         });
       }
     } catch (err) {

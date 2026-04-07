@@ -166,6 +166,32 @@ const StudentDashboard = () => {
     });
   };
 
+  const markAssignmentTodoCompleted = (assignmentId) => {
+    const normalizedId = assignmentId ? String(assignmentId) : '';
+    if (!normalizedId) return;
+
+    const todoId = `assignment:${normalizedId}`;
+
+    setTodos((prev) => {
+      const prevTodos = Array.isArray(prev) ? prev : [];
+      const nextTodos = prevTodos.map((todo) => {
+        if (!todo) return todo;
+        const matches =
+          String(todo.id) === todoId ||
+          (todo.source === 'assignment' && String(todo.assignmentId || '') === normalizedId);
+        if (!matches) return todo;
+        if (todo.done) return todo;
+        return { ...todo, done: true };
+      });
+
+      const changed = nextTodos.some((t, i) => (t?.done || false) !== (prevTodos[i]?.done || false));
+      if (changed) {
+        saveTodosToLocalStorage(nextTodos);
+      }
+      return changed ? nextTodos : prevTodos;
+    });
+  };
+
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') || 'dark';
     setIsDark(savedTheme === 'dark');
@@ -675,6 +701,10 @@ const StudentDashboard = () => {
 
   useEffect(() => {
     const handleAssignmentsUpdated = (data) => {
+      if (data?.reason === 'submitted' && data?.assignmentId) {
+        markAssignmentTodoCompleted(data.assignmentId);
+      }
+
       if (data?.courseId && String(data.courseId) !== String(activeCourseId)) {
         // Update upcoming deadlines regardless; they span all courses.
         fetchUpcoming();
@@ -712,6 +742,8 @@ const StudentDashboard = () => {
       );
       setAssignmentStatus((prev) => ({ ...prev, [assignmentId]: 'Submission received.' }));
       setAssignmentFiles((prev) => ({ ...prev, [assignmentId]: [] }));
+      markAssignmentTodoCompleted(assignmentId);
+      fetchUpcoming();
       fetchAssignments();
     } catch (err) {
       setAssignmentStatus((prev) => ({
@@ -742,13 +774,15 @@ const StudentDashboard = () => {
     const submission = assignment.latestSubmission;
     const deadline = assignment.deadline ? new Date(assignment.deadline) : null;
     const isPastDue = deadline ? new Date() > deadline : false;
+    const maxPoints = Number.isFinite(Number(assignment?.maxPoints)) ? Number(assignment.maxPoints) : null;
 
     if (!submission) {
       return isPastDue ? { label: 'Missing', tone: 'error' } : { label: 'Pending', tone: 'muted' };
     }
 
     if (submission.score !== null && submission.score !== undefined) {
-      return { label: `Graded • ${submission.score}`, tone: 'primary' };
+      const scoreText = maxPoints ? `${submission.score} / ${maxPoints}` : String(submission.score);
+      return { label: `Graded • ${scoreText}`, tone: 'primary' };
     }
 
     if (submission.isLate) {

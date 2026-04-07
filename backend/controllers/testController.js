@@ -284,6 +284,10 @@ const listTests = async (req, res) => {
         }
 
         const query = { courseId };
+        if (role === 'student') {
+            // Students should not be offered inactive tests.
+            query.isActive = { $ne: false };
+        }
 
         const tests = await Test.find(query)
             .sort({ isActive: -1, createdAt: -1 })

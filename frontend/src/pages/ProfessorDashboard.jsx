@@ -53,7 +53,9 @@ const ProfessorDashboard = () => {
   const [assignmentForm, setAssignmentForm] = useState({
     title: '',
     description: '',
-    deadline: '',
+    deadlineDate: '',
+    deadlineTime: '',
+    maxPoints: '100',
     rubric: '',
     files: [],
   });
@@ -498,17 +500,41 @@ const ProfessorDashboard = () => {
   };
 
   const getPracticeAnalytics = (attempts) => {
-    const validAttempts = Array.isArray(attempts)
-      ? attempts.filter((attempt) => Number.isFinite(Number(attempt?.score)))
-      : [];
-    const orderedAttempts = [...validAttempts].sort((a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0));
-    const totalAttempts = validAttempts.length;
-    const totalScore = validAttempts.reduce((sum, attempt) => sum + Number(attempt?.score || 0), 0);
-    const totalTime = validAttempts.reduce((sum, attempt) => sum + Number(attempt?.timeTakenSeconds || 0), 0);
-    const passingAttempts = validAttempts.filter((attempt) => Number(attempt?.score || 0) >= 70).length;
+    const rawAttempts = Array.isArray(attempts) ? attempts : [];
+    const validAttempts = rawAttempts.filter((attempt) => Number.isFinite(Number(attempt?.score)));
+
+    // Requirement: consider only the 1st attempt of each unique student for analysis.
+    const orderedAttempts = [...validAttempts].sort(
+      (a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0)
+    );
+
+    const firstAttemptByStudent = new Map();
+    orderedAttempts.forEach((attempt) => {
+      const studentKey =
+        String(attempt?.studentId || '') ||
+        String(attempt?.student?._id || '') ||
+        String(attempt?.student?.email || '') ||
+        '';
+
+      if (!studentKey) {
+        // Fallback: keep attempt as-is (should be rare for professor results).
+        firstAttemptByStudent.set(String(attempt?.attemptId || attempt?._id || Math.random()), attempt);
+        return;
+      }
+
+      if (!firstAttemptByStudent.has(studentKey)) {
+        firstAttemptByStudent.set(studentKey, attempt);
+      }
+    });
+
+    const uniqueFirstAttempts = Array.from(firstAttemptByStudent.values());
+    const totalAttempts = uniqueFirstAttempts.length;
+    const totalScore = uniqueFirstAttempts.reduce((sum, attempt) => sum + Number(attempt?.score || 0), 0);
+    const totalTime = uniqueFirstAttempts.reduce((sum, attempt) => sum + Number(attempt?.timeTakenSeconds || 0), 0);
+    const passingAttempts = uniqueFirstAttempts.filter((attempt) => Number(attempt?.score || 0) >= 70).length;
 
     const weakAreaCounts = new Map();
-    validAttempts.forEach((attempt) => {
+    uniqueFirstAttempts.forEach((attempt) => {
       (Array.isArray(attempt?.weakAreas) ? attempt.weakAreas : []).forEach((area) => {
         const normalized = String(area || '').trim();
         if (!normalized) return;
@@ -516,18 +542,25 @@ const ProfessorDashboard = () => {
       });
     });
 
+    const orderedUniqueAttempts = [...uniqueFirstAttempts].sort(
+      (a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0)
+    );
+
     return {
       totalAttempts,
       averageScore: totalAttempts ? Math.round(totalScore / totalAttempts) : 0,
       bestScore: totalAttempts ? Math.max(...validAttempts.map((attempt) => Number(attempt?.score || 0))) : 0,
       averageTime: totalAttempts ? Math.round(totalTime / totalAttempts) : 0,
       passRate: totalAttempts ? Math.round((passingAttempts / totalAttempts) * 100) : 0,
-      recentTrend: orderedAttempts.slice(-8).map((attempt, index) => ({
+      recentTrend: orderedUniqueAttempts.slice(-8).map((attempt, index) => ({
         label: `A${index + 1}`,
         score: Number(attempt?.score || 0),
-        date: attempt?.createdAt ? new Date(attempt.createdAt).toLocaleDateString() : '',
+        date: attempt?.createdAt ? new Date(attempt.createdAt).toLocaleString() : '',
+        studentName: attempt?.student?.name || attempt?.student?.email || 'Student',
+        studentEmail: attempt?.student?.email || '',
+        attemptId: String(attempt?.attemptId || attempt?._id || ''),
       })),
-      recentAttempts: orderedAttempts.slice(-12).reverse(),
+      recentAttempts: orderedUniqueAttempts.slice(-12).reverse(),
       weakAreas: Array.from(weakAreaCounts.entries())
         .sort((a, b) => b[1] - a[1])
         .slice(0, 6)
@@ -540,8 +573,20 @@ const ProfessorDashboard = () => {
       setAssignmentMessage('Select a course before creating assignments.');
       return;
     }
-    if (!assignmentForm.title.trim() || !assignmentForm.deadline) {
-      setAssignmentMessage('Title and deadline are required.');
+
+    const title = assignmentForm.title?.trim() || '';
+    const deadlineDate = String(assignmentForm.deadlineDate || '').trim();
+    const deadlineTime = String(assignmentForm.deadlineTime || '').trim();
+    const deadlineCombined = deadlineDate && deadlineTime ? `${deadlineDate}T${deadlineTime}` : '';
+
+    if (!title || !deadlineCombined) {
+      setAssignmentMessage('Title, deadline date, and deadline time are required.');
+      return;
+    }
+
+    const maxPointsNum = Number(assignmentForm.maxPoints);
+    if (!Number.isFinite(maxPointsNum) || maxPointsNum <= 0) {
+      setAssignmentMessage('Max points must be a positive number.');
       return;
     }
 
@@ -549,10 +594,11 @@ const ProfessorDashboard = () => {
       setAssignmentMessage('');
       const token = localStorage.getItem('token');
       const form = new FormData();
-      form.append('title', assignmentForm.title);
+      form.append('title', title);
       form.append('description', assignmentForm.description);
       form.append('courseId', activeCourseId);
-      form.append('deadline', assignmentForm.deadline);
+      form.append('deadline', deadlineCombined);
+      form.append('maxPoints', String(maxPointsNum));
       form.append('rubric', assignmentForm.rubric);
       assignmentForm.files.forEach((file) => form.append('files', file));
 
@@ -560,7 +606,15 @@ const ProfessorDashboard = () => {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      setAssignmentForm({ title: '', description: '', deadline: '', rubric: '', files: [] });
+      setAssignmentForm({
+        title: '',
+        description: '',
+        deadlineDate: '',
+        deadlineTime: '',
+        maxPoints: '100',
+        rubric: '',
+        files: [],
+      });
       setAssignmentMessage('Assignment created.');
       fetchAssignments();
     } catch (err) {
@@ -1672,11 +1726,38 @@ const ProfessorDashboard = () => {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                   <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Deadline</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                    <input
+                      className="glass-input"
+                      type="date"
+                      value={assignmentForm.deadlineDate}
+                      onChange={(e) =>
+                        setAssignmentForm((prev) => ({
+                          ...prev,
+                          deadlineDate: e.target.value,
+                          // If the browser time picker is finicky, default to end-of-day.
+                          deadlineTime: prev.deadlineTime || '23:59',
+                        }))
+                      }
+                    />
+                    <input
+                      className="glass-input"
+                      type="time"
+                      step="60"
+                      value={assignmentForm.deadlineTime}
+                      onChange={(e) => setAssignmentForm({ ...assignmentForm, deadlineTime: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Max points</label>
                   <input
                     className="glass-input"
-                    type="datetime-local"
-                    value={assignmentForm.deadline}
-                    onChange={(e) => setAssignmentForm({ ...assignmentForm, deadline: e.target.value })}
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={assignmentForm.maxPoints}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, maxPoints: e.target.value })}
                   />
                 </div>
               </div>
@@ -1741,6 +1822,11 @@ const ProfessorDashboard = () => {
                             <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
                               Due {new Date(assignment.deadline).toLocaleString()}
                             </p>
+                            {Number.isFinite(Number(assignment.maxPoints)) ? (
+                              <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                                Max points: {Number(assignment.maxPoints)}
+                              </p>
+                            ) : null}
                           </div>
                           <span style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '999px', background: 'rgba(10, 132, 255, 0.12)', color: 'var(--primary)' }}>
                             {assignment.course?.courseCode || 'Course'}
@@ -1816,7 +1902,7 @@ const ProfessorDashboard = () => {
                                       <input
                                         type="number"
                                         className="glass-input"
-                                        placeholder="Score"
+                                        placeholder={Number.isFinite(Number(assignment.maxPoints)) ? `Score (0-${Number(assignment.maxPoints)})` : 'Score'}
                                         value={gradeInputs[submission._id]?.score ?? submission.score ?? ''}
                                         onChange={(e) =>
                                           setGradeInputs((prev) => ({
@@ -1957,8 +2043,42 @@ const ProfessorDashboard = () => {
                                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
                                   <XAxis dataKey="label" stroke="var(--muted)" />
                                   <YAxis domain={[0, 100]} stroke="var(--muted)" />
-                                  <Tooltip />
-                                  <Line type="monotone" dataKey="score" stroke="#4F8CFF" strokeWidth={3} dot={{ r: 4 }} />
+                                  <Tooltip
+                                    content={({ active, payload }) => {
+                                      if (!active || !payload || payload.length === 0) return null;
+                                      const point = payload[0]?.payload || {};
+                                      const name = point.studentName || 'Student';
+                                      const email = point.studentEmail || '';
+                                      const score = Number(point.score);
+                                      const date = point.date || '';
+
+                                      return (
+                                        <div
+                                          style={{
+                                            background: 'rgba(26, 26, 46, 0.95)',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: '10px',
+                                            padding: '0.6rem 0.75rem',
+                                            color: 'var(--text-main)',
+                                            minWidth: 220,
+                                          }}
+                                        >
+                                          <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>{name}</div>
+                                          {email ? (
+                                            <div style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>{email}</div>
+                                          ) : null}
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+                                            <span style={{ color: 'var(--muted)' }}>Score</span>
+                                            <span style={{ fontWeight: 700 }}>{Number.isFinite(score) ? `${score}%` : '—'}</span>
+                                          </div>
+                                          {date ? (
+                                            <div style={{ marginTop: '0.25rem', color: 'var(--muted)', fontSize: '0.8rem' }}>{date}</div>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    }}
+                                  />
+                                  <Line type="monotone" dataKey="score" stroke="#4F8CFF" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                                 </LineChart>
                               </ResponsiveContainer>
                             )}

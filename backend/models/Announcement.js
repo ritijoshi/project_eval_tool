@@ -1,5 +1,16 @@
 const mongoose = require('mongoose');
 
+const fileSchema = new mongoose.Schema(
+  {
+    filename: { type: String, required: true },
+    originalName: { type: String, required: true },
+    mimeType: { type: String, default: '' },
+    size: { type: Number, default: 0 },
+    url: { type: String, required: true },
+  },
+  { _id: false }
+);
+
 const announcementSchema = new mongoose.Schema(
   {
     courseId: {
@@ -26,6 +37,10 @@ const announcementSchema = new mongoose.Schema(
     },
     attachments: {
       type: [String],
+      default: [],
+    },
+    files: {
+      type: [fileSchema],
       default: [],
     },
     isPinned: {

@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Announcement = require('../models/Announcement');
 const Course = require('../models/Course');
 const { notifyCourseUpdate, getIO } = require('../utils/notificationUtils');
+const path = require('path');
 
 const ensureDbConnected = () => mongoose.connection.readyState === 1;
 
@@ -29,6 +30,41 @@ const normalizeAttachments = (value) => {
   }
 
   return { attachments: urls };
+};
+
+const parseAttachmentsInput = (value) => {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) return value;
+  if (value === null) return [];
+
+  // multipart form-data sends fields as strings
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // fall through
+    }
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+};
+
+const mapUploadedFiles = (files = []) => {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  return files.map((file) => ({
+    filename: file.filename,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
+    size: file.size,
+    url: `/uploads/${file.destination ? path.basename(file.destination) : 'announcements'}/${file.filename}`,
+  }));
 };
 
 const canStudentAccessCourse = async (courseId, studentId) => {
@@ -143,8 +179,11 @@ const createAnnouncement = async (req, res) => {
       return res.status(400).json({ message: 'scheduledAt is invalid' });
     }
 
-    const normalized = normalizeAttachments(attachments);
+    const attachmentsInput = parseAttachmentsInput(attachments);
+    const normalized = normalizeAttachments(attachmentsInput);
     if (normalized.error) return res.status(400).json({ message: normalized.error });
+
+    const uploadedFiles = mapUploadedFiles(req.files || []);
 
     const now = new Date();
     const shouldPublishNow = !parsedScheduledAt || parsedScheduledAt <= now;
@@ -159,6 +198,7 @@ const createAnnouncement = async (req, res) => {
       title: String(title).trim(),
       content: String(content || ''),
       attachments: normalized.attachments,
+      files: uploadedFiles,
       isPinned: Boolean(isPinned),
       scheduledAt: scheduledAtValue,
       publishedAt,
@@ -329,9 +369,18 @@ const updateAnnouncement = async (req, res) => {
     }
 
     if (patch.attachments !== undefined) {
-      const normalized = normalizeAttachments(patch.attachments);
+      const attachmentsInput = parseAttachmentsInput(patch.attachments);
+      const normalized = normalizeAttachments(attachmentsInput);
       if (normalized.error) return res.status(400).json({ message: normalized.error });
       announcement.attachments = normalized.attachments;
+    }
+
+    const uploadedFiles = mapUploadedFiles(req.files || []);
+    if (uploadedFiles.length > 0) {
+      const existing = Array.isArray(announcement.files) ? announcement.files : [];
+      const merged = [...existing, ...uploadedFiles];
+      // Keep a reasonable cap.
+      announcement.files = merged.slice(0, 20);
     }
 
     if (patch.isPinned !== undefined) {

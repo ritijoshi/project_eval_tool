@@ -17,6 +17,7 @@ const assignmentSchema = new mongoose.Schema(
         description: { type: String, default: '', trim: true },
         course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true },
         deadline: { type: Date, required: true },
+        maxPoints: { type: Number, required: true, min: 1, default: 100 },
         rubric: { type: String, default: '' },
         attachments: [fileSchema],
         createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
