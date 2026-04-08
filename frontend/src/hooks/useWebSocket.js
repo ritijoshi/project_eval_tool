@@ -4,7 +4,7 @@ import { API_BASE } from '../config/api';
 
 /**
  * Custom hook for WebSocket connection and events
- * Usage: const { socket, isConnected, on, emit, off } = useWebSocket();
+ * Usage: const { isConnected, on, emit, off } = useWebSocket();
  */
 export const useWebSocket = () => {
   const [isConnected, setIsConnected] = useState(false);
@@ -14,7 +14,11 @@ export const useWebSocket = () => {
 
   useEffect(() => {
     const syncToken = () => {
-      setToken(localStorage.getItem('token'));
+      const nextToken = localStorage.getItem('token');
+      setToken(nextToken);
+      if (!nextToken) {
+        setIsConnected(false);
+      }
     };
 
     const handleStorage = (e) => {
@@ -41,7 +45,6 @@ export const useWebSocket = () => {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
-      setIsConnected(false);
       return;
     }
 
@@ -118,7 +121,6 @@ export const useWebSocket = () => {
   }, [isConnected]);
 
   return {
-    socket: socketRef.current,
     isConnected,
     on,
     off,

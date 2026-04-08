@@ -56,7 +56,7 @@ export default function ProfessorMaterialsUploader({ onUploaded }) {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/professor/courses`, config);
         setExistingCourses(res.data?.courses || []);
-      } catch (err) {
+      } catch {
         setExistingCourses([]);
       } finally {
         setCoursesLoading(false);

@@ -500,8 +500,6 @@ const recomputeStudentCourseProgress = async ({ studentId, courseId, includeAiIn
     }
 
     const update = {
-        studentId,
-        courseId,
         overallProgress: computed.overallProgress,
         modulesCompleted: computed.modulesCompleted,
         totalModules: computed.totalModules,

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
@@ -95,7 +96,7 @@ export const ActiveCourseProvider = ({ children }) => {
       }
 
       setActiveCourseId('');
-    } catch (err) {
+    } catch {
       setCourses([]);
       setActiveCourseId('');
     } finally {
@@ -123,7 +124,7 @@ export const ActiveCourseProvider = ({ children }) => {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/student/rubric?courseId=${courseId}`, config);
         setActiveRubricText(String(res.data?.rubricText || ''));
-      } catch (err) {
+      } catch {
         setActiveRubricText('');
       } finally {
         setRubricLoading(false);
@@ -187,7 +188,7 @@ export const ActiveCourseProvider = ({ children }) => {
         if (!token) return;
         const config = { headers: { Authorization: `Bearer ${token}` } };
         await axios.put(`${API_BASE}/api/user/active-course`, { courseId: activeCourseId }, config);
-      } catch (err) {
+      } catch {
         // Keep UX responsive even if persistence fails.
       }
     };

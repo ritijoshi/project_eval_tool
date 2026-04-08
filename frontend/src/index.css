@@ -2110,7 +2110,8 @@ a:hover {
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   gap: 12px;
-  min-height: 560px;
+  min-height: 0;
+  height: 100%;
   border: 1px solid var(--border);
   border-radius: 18px;
   padding: 14px;
@@ -2222,6 +2223,7 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
 }
 
 .chatgpt-empty {
@@ -2365,7 +2367,7 @@ a:hover {
 
 .chatgpt-compose {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr;
   gap: 10px;
   padding-top: 4px;
 }

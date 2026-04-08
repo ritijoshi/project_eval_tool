@@ -39,6 +39,12 @@ app.use(
     })
 );
 app.use(express.json({ limit: '2mb' }));
+// Allow the frontend (different origin/port) to load uploaded attachments (audio/image/docs).
+// Helmet sets Cross-Origin-Resource-Policy: same-origin by default, which will block these.
+app.use('/uploads', (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+});
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(requestLogger);
 

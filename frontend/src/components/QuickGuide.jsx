@@ -21,10 +21,6 @@ const QuickGuide = ({ role = 'student' }) => {
   const [expanded, setExpanded] = useState(true);
   const [expandedSection, setExpandedSection] = useState(0);
 
-  const toggleSection = (index) => {
-    setExpandedSection(expandedSection === index ? -1 : index);
-  };
-
   const guides = {
     student: [
       {

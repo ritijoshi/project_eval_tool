@@ -512,6 +512,16 @@ const submitAttempt = async (req, res) => {
             .limit(5)
             .lean();
 
+        try {
+            await recomputeStudentCourseProgress({
+                studentId,
+                courseId: test.courseId,
+                includeAiInsights: false,
+            });
+        } catch (progressErr) {
+            console.warn('Progress update failed after attempt submission:', progressErr.message);
+        }
+
         const io = req.app?.get('io');
         if (io) {
             io.to(`user:${studentId}`).emit('practice-updated', {
@@ -529,16 +539,6 @@ const submitAttempt = async (req, res) => {
                 studentId: String(studentId),
                 timestamp: new Date().toISOString(),
             });
-        }
-
-        try {
-            await recomputeStudentCourseProgress({
-                studentId,
-                courseId: test.courseId,
-                includeAiInsights: false,
-            });
-        } catch (progressErr) {
-            console.warn('Progress update failed after attempt submission:', progressErr.message);
         }
 
         return res.status(201).json({

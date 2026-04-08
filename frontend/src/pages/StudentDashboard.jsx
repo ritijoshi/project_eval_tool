@@ -40,7 +40,7 @@ const StudentDashboard = () => {
   const [allCourseProgress, setAllCourseProgress] = useState([]);
   const [progressLoading, setProgressLoading] = useState(false);
   const [progressError, setProgressError] = useState('');
-  const [error, setError] = useState('');
+  const [_error, setError] = useState('');
   const [evaluationData, setEvaluationData] = useState(null);
   const [submissionText, setSubmissionText] = useState('');
   const [rubricText, setRubricText] = useState('1. Clarity (20%)\n2. Accuracy (50%)\n3. Originality (30%)');
@@ -261,7 +261,7 @@ const StudentDashboard = () => {
       setUpcomingAssignments(list);
       upsertAssignmentTodos(list);
       return list;
-    } catch (err) {
+    } catch {
       setUpcomingAssignments([]);
       return [];
     } finally {
@@ -330,7 +330,7 @@ const StudentDashboard = () => {
       const config = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axios.get(`${API_BASE}/api/results?courseId=${encodeURIComponent(activeCourseId)}`, config);
       setPracticeHistory(Array.isArray(res.data?.results) ? res.data.results : []);
-    } catch (err) {
+    } catch {
       setPracticeHistory([]);
     } finally {
       setPracticeHistoryLoading(false);
@@ -422,7 +422,7 @@ const StudentDashboard = () => {
           explanation: res.data?.explanation || '',
         },
       }));
-    } catch (err) {
+    } catch {
       // Non-blocking: keep the UX smooth even if check fails.
     }
   };
@@ -516,8 +516,18 @@ const StudentDashboard = () => {
   useEffect(() => {
     const handlePracticeUpdated = (data) => {
       if (!data) return;
-      if (!activeCourseId || activeCourseId === 'all') return;
-      if (data.courseId && String(data.courseId) !== String(activeCourseId)) return;
+
+      // Even if the student is viewing "All courses" (or another course), we still
+      // want the progress snapshot to reflect the latest practice activity.
+      const targetsActiveCourse =
+        !data.courseId ||
+        (activeCourseId && activeCourseId !== 'all' && String(data.courseId) === String(activeCourseId));
+
+      // Only mutate practice-test specific UI when the update targets the active course.
+      if (!targetsActiveCourse) {
+        fetchProgressData();
+        return;
+      }
 
       if (data.kind === 'test-updated' && data.testId) {
         setPracticeTests((prev) =>
@@ -776,7 +786,7 @@ const StudentDashboard = () => {
         config
       );
       setAssignments(Array.isArray(res.data?.assignments) ? res.data.assignments : []);
-    } catch (err) {
+    } catch {
       setAssignments([]);
     } finally {
       setAssignmentsLoading(false);
@@ -789,16 +799,19 @@ const StudentDashboard = () => {
         markAssignmentTodoCompleted(data.assignmentId);
       }
 
-      if (data?.courseId && String(data.courseId) !== String(activeCourseId)) {
-        // Update upcoming deadlines regardless; they span all courses.
-        fetchUpcoming();
-        return;
-      }
-
+      // Upcoming deadlines and todo list span all courses.
       fetchUpcoming();
-      if (activeTab === 'courses' && activeCourseId && activeCourseId !== 'all') {
+
+      // Only refresh the course assignments list when the update targets the active course.
+      const targetsActiveCourse =
+        !data?.courseId ||
+        (activeCourseId && activeCourseId !== 'all' && String(data.courseId) === String(activeCourseId));
+
+      if (targetsActiveCourse && activeTab === 'courses' && activeCourseId && activeCourseId !== 'all') {
         fetchAssignments();
       }
+
+      // Always refresh progress so the course-wise progress list stays current.
       fetchProgressData();
     };
 
@@ -807,6 +820,13 @@ const StudentDashboard = () => {
       off('assignments-updated', handleAssignmentsUpdated);
     };
   }, [on, off, activeCourseId, activeTab, assignmentSort]);
+
+  useEffect(() => {
+    if (activeTab !== 'dashboard') return;
+    fetchUpcoming();
+    fetchProgressData();
+    fetchPracticeTests();
+  }, [activeTab, activeCourseId]);
 
   const submitAssignment = async (assignmentId) => {
     const files = assignmentFiles[assignmentId] || [];
@@ -849,7 +869,7 @@ const StudentDashboard = () => {
         ...prev,
         [assignmentId]: Array.isArray(res.data?.submissions) ? res.data.submissions : [],
       }));
-    } catch (err) {
+    } catch {
       setAssignmentSubmissions((prev) => ({ ...prev, [assignmentId]: [] }));
     } finally {
       setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: false }));
@@ -1037,6 +1057,10 @@ const StudentDashboard = () => {
                 <p style={{ color: 'var(--muted)' }}>Calculating your latest progress...</p>
               ) : progressError ? (
                 <p style={{ color: 'var(--error)' }}>{progressError}</p>
+              ) : !activeCourseId || activeCourseId === 'all' ? (
+                <p style={{ color: 'var(--muted)' }}>
+                  Select an active course to see detailed progress insights.
+                </p>
               ) : (
                 <>
                   {progressData && (
@@ -1314,8 +1338,9 @@ const StudentDashboard = () => {
                   maxHeight: '560px',
                   width: '100%',
                   borderRadius: '0.5rem',
-                  padding: '0.25rem',
+                  padding: 0,
                   background: 'transparent',
+                  overflow: 'hidden',
                 }}
               >
                 <Chatbot />
@@ -1334,7 +1359,7 @@ const StudentDashboard = () => {
                 </span>
               </div>
 
-              <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.75rem' }}>
+              <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
                 <input
                   type="text"
                   placeholder="Add a new task..."
@@ -1344,6 +1369,7 @@ const StudentDashboard = () => {
                   className="glass-input"
                   style={{
                     flex: 1,
+                    minWidth: '240px',
                     padding: '0.75rem',
                     borderRadius: '0.5rem',
                     border: '1px solid var(--border)',
@@ -1357,7 +1383,7 @@ const StudentDashboard = () => {
                     padding: '0.75rem',
                     borderRadius: '0.5rem',
                     border: '1px solid var(--border)',
-                    minWidth: '120px',
+                    minWidth: '140px',
                   }}
                 >
                   <option value="normal">Normal</option>
@@ -1379,6 +1405,7 @@ const StudentDashboard = () => {
                     alignItems: 'center',
                     gap: '0.5rem',
                     transition: 'all 0.2s ease',
+                    flexShrink: 0,
                   }}
                 >
                   <Plus size={18} />
@@ -1437,6 +1464,7 @@ const StudentDashboard = () => {
                           textDecoration: task.done ? 'line-through' : 'none',
                           color: task.done ? 'var(--muted)' : 'var(--text-main)',
                           fontSize: '0.95rem',
+                          wordBreak: 'break-word',
                         }}
                       >
                         {task.title}

@@ -239,7 +239,17 @@ const submitAssignment = async (req, res) => {
             isLatest: true,
         });
 
-        // Realtime: remove from upcoming deadlines immediately for this student.
+        try {
+            await recomputeStudentCourseProgress({
+                studentId,
+                courseId: assignment.course,
+                includeAiInsights: false,
+            });
+        } catch (progressErr) {
+            console.warn('Progress update failed after assignment submission:', progressErr.message);
+        }
+
+        // Realtime: emit only after recompute so dashboard progress snapshot is fresh.
         const io = req.app?.get('io');
         if (io) {
             io.to(`user:${studentId}`).emit('assignments-updated', {
@@ -249,16 +259,6 @@ const submitAssignment = async (req, res) => {
                 submissionId: String(submission._id),
                 timestamp: new Date().toISOString(),
             });
-        }
-
-        try {
-            await recomputeStudentCourseProgress({
-                studentId,
-                courseId: assignment.course,
-                includeAiInsights: false,
-            });
-        } catch (progressErr) {
-            console.warn('Progress update failed after assignment submission:', progressErr.message);
         }
 
         return res.status(201).json({ message: 'Submission received.', submission });
@@ -432,6 +432,18 @@ const gradeSubmission = async (req, res) => {
             });
         } catch (progressErr) {
             console.warn('Progress update failed after grading:', progressErr.message);
+        }
+
+        const io = req.app?.get('io');
+        if (io) {
+            io.to(`user:${submission.student}`).emit('assignments-updated', {
+                reason: 'graded',
+                courseId: String(assignment.course?._id || assignment.course),
+                assignmentId: String(assignmentId),
+                submissionId: String(submission._id),
+                score: submission.score,
+                timestamp: new Date().toISOString(),
+            });
         }
 
         return res.status(200).json({ message: 'Submission graded.', submission });

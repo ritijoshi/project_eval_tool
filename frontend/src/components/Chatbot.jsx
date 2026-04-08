@@ -44,6 +44,32 @@ const normalizeDraftFile = (file) => ({
   previewUrl: String(file?.type || '').startsWith('image/') ? URL.createObjectURL(file) : '',
 });
 
+const pickAudioMimeType = () => {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+  ];
+
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
+};
+
+const extensionForAudioMime = (mimeType) => {
+  const value = String(mimeType || '').toLowerCase();
+  if (value.includes('mp4')) return 'm4a';
+  if (value.includes('aac')) return 'aac';
+  if (value.includes('ogg')) return 'ogg';
+  if (value.includes('wav')) return 'wav';
+  if (value.includes('mpeg') || value.includes('mp3')) return 'mp3';
+  return 'webm';
+};
+
 const Chatbot = () => {
   const [studentLevel, setStudentLevel] = useState('beginner');
   const [messages, setMessages] = useState([]);
@@ -101,7 +127,7 @@ const Chatbot = () => {
           { headers: getAuthHeaders() }
         );
         setMessages(Array.isArray(res.data?.messages) ? res.data.messages.map(normalizeServerMessage).filter(Boolean) : []);
-      } catch (err) {
+      } catch {
         setMessages([]);
       } finally {
         setHistoryLoading(false);
@@ -124,7 +150,7 @@ const Chatbot = () => {
         { headers: getAuthHeaders() }
       );
       setMessages([]);
-    } catch (err) {
+    } catch {
       // Keep the UI stable if clearing history fails.
     }
   };
@@ -233,7 +259,9 @@ const Chatbot = () => {
   const submitVoiceMessage = async (audioBlob) => {
     if (!activeCourseKey || loading || !audioBlob) return;
 
-    const file = new File([audioBlob], `voice-${Date.now()}.webm`, { type: audioBlob.type || 'audio/webm' });
+    const mimeType = audioBlob.type || pickAudioMimeType() || 'audio/webm';
+    const ext = extensionForAudioMime(mimeType);
+    const file = new File([audioBlob], `voice-${Date.now()}.${ext}`, { type: mimeType });
     const formData = new FormData();
     formData.append('course_id', activeCourseId || '');
     formData.append('course_key', activeCourseKey);
@@ -279,11 +307,22 @@ const Chatbot = () => {
       return;
     }
 
+    if (typeof window !== 'undefined' && window.isSecureContext === false) {
+      setErrorMessage('Microphone access requires HTTPS (or localhost).');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const mimeType = pickAudioMimeType();
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       recordingChunksRef.current = [];
+
+      recorder.onerror = () => {
+        setErrorMessage('Recording failed. Please try again.');
+        stopRecordingStream();
+        setIsRecording(false);
+      };
 
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
@@ -298,10 +337,13 @@ const Chatbot = () => {
         recordingChunksRef.current = [];
         if (blob.size > 0) {
           await submitVoiceMessage(blob);
+        } else {
+          setErrorMessage('No audio captured. Please try again.');
         }
       };
 
-      recorder.start();
+      // Use a timeslice so browsers reliably flush chunks.
+      recorder.start(250);
       recorderRef.current = recorder;
       recordingStreamRef.current = stream;
       setIsRecording(true);
@@ -341,13 +383,6 @@ const Chatbot = () => {
     }
 
     setDraftFiles((prev) => [...prev, ...nextFiles]);
-  };
-
-  const handleDrop = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setDragActive(false);
-    handleFileSelection(event.dataTransfer.files);
   };
 
   const removeDraftFile = (index) => {
@@ -576,7 +611,7 @@ const Chatbot = () => {
             >
               {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
             </button>
-            <button type="submit" disabled={loading || !activeCourseKey || (!input.trim() && draftFiles.length === 0 && !isRecording)} className="chatgpt-send">
+            <button type="submit" disabled={loading || isRecording || !activeCourseKey || (!input.trim() && draftFiles.length === 0)} className="chatgpt-send">
               <Send size={16} />
             </button>
           </div>

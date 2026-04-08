@@ -49,7 +49,7 @@ const ProfessorDashboard = () => {
   const [courseDeleteStatus, setCourseDeleteStatus] = useState({});
   const [inviteInputs, setInviteInputs] = useState({});
   const [inviteStatus, setInviteStatus] = useState({});
-  const { activeCourseId, activeCourse, isAllCourses, setActiveCourseId, refreshCourses } = useActiveCourse();
+  const { activeCourseId, activeCourse, isAllCourses: _isAllCourses, setActiveCourseId, refreshCourses } = useActiveCourse();
   const [assignments, setAssignments] = useState([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentForm, setAssignmentForm] = useState({
@@ -114,7 +114,7 @@ const ProfessorDashboard = () => {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/analytics/course/${activeCourseId}`, config);
         setCourseProgressAnalytics(res.data || null);
-      } catch (err) {
+      } catch {
         setCourseProgressAnalytics(null);
       } finally {
         setCourseProgressLoading(false);
@@ -126,7 +126,7 @@ const ProfessorDashboard = () => {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/professor/rubrics`, config);
         setRubrics(Array.isArray(res.data?.rubrics) ? res.data.rubrics : []);
-      } catch (err) {
+      } catch {
         setRubrics([]);
       }
     };
@@ -137,7 +137,7 @@ const ProfessorDashboard = () => {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/professor/weekly-updates?limit=8`, config);
         setWeeklyUpdateHistory(Array.isArray(res.data?.updates) ? res.data.updates : []);
-      } catch (err) {
+      } catch {
         setWeeklyUpdateHistory([]);
       }
     };
@@ -253,7 +253,7 @@ const ProfessorDashboard = () => {
       const config = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axios.get(`${API_BASE}/api/professor/courses`, config);
       setCourses(Array.isArray(res.data?.records) ? res.data.records : []);
-    } catch (err) {
+    } catch {
       setCourses([]);
     } finally {
       setCoursesLoading(false);
@@ -268,7 +268,7 @@ const ProfessorDashboard = () => {
       const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
       const res = await axios.get(`${API_BASE}/api/professor/assignments${courseQuery}`, config);
       setAssignments(Array.isArray(res.data?.assignments) ? res.data.assignments : []);
-    } catch (err) {
+    } catch {
       setAssignments([]);
     } finally {
       setAssignmentsLoading(false);
@@ -287,7 +287,7 @@ const ProfessorDashboard = () => {
       const config = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axios.get(`${API_BASE}/api/tests?courseId=${activeCourseId}`, config);
       setPracticeTests(Array.isArray(res.data?.tests) ? res.data.tests : []);
-    } catch (err) {
+    } catch {
       setPracticeTests([]);
     } finally {
       setPracticeTestsLoading(false);
@@ -506,7 +506,7 @@ const ProfessorDashboard = () => {
       const config = { headers: { Authorization: `Bearer ${token}` } };
       const res = await axios.get(`${API_BASE}/api/results?courseId=${activeCourseId}`, config);
       setPracticeResults(Array.isArray(res.data?.results) ? res.data.results : []);
-    } catch (err) {
+    } catch {
       setPracticeResults([]);
     } finally {
       setPracticeResultsLoading(false);
@@ -654,7 +654,7 @@ const ProfessorDashboard = () => {
         ...prev,
         [assignmentId]: Array.isArray(res.data?.submissions) ? res.data.submissions : [],
       }));
-    } catch (err) {
+    } catch {
       setAssignmentSubmissions((prev) => ({ ...prev, [assignmentId]: [] }));
     } finally {
       setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: false }));
