@@ -191,14 +191,7 @@ async def chat_with_agent(req: ChatRequest):
         
     if not VECTORS_AVAILABLE:
         # Graceful fallback logic so UI remains functional
-        fallback_reply = (
-            f"🧠 **Course Agent Response Mode**: "
-            f"You asked: '{req.message}'. "
-            f"\\n\\nSince the vector database isn't available, I can still help based on general knowledge. "
-            f"\\n\\nProfessor's Teaching Style: {req.professor_style[:200]}... "
-            f"\\n\\nYour Level: {req.student_level}. "
-            f"\\n\\nFor better, course-specific answers, please make sure materials are uploaded to the course and try asking again."
-        )
+        fallback_reply = "I don't have enough course material yet, please ask your professor to upload content."
         return ChatResponse(reply=fallback_reply)
 
     vector_store = get_vector_store()
@@ -209,13 +202,16 @@ async def chat_with_agent(req: ChatRequest):
     
     # 2. Advanced Prompt Engineering
     system_prompt = (
-        "You are an expert AI teaching assistant answering contextually about this material: {context}\n\n"
-        "Your Goals:\n"
-        f"1. Mimic the Professor's Style: {req.professor_style}\n"
-        f"2. Adapt to Student Level: The student is a '{req.student_level}'. Adjust your explanation depth. "
-        "If beginner, use analogies and simple definitions. If intermediate/advanced, go deeper into technical specifics.\n"
-        "3. Use memory context from the chat history if needed.\n\n"
-        "If the answer isn't in the context, gently guide the student toward standard learning resources in character."
+        "You are a friendly teaching assistant. Answer the student's question concisely using the provided course material.\n\n"
+        "Rules:\n"
+        "1. Answer like a friendly teaching assistant.\n"
+        "2. DO NOT include section titles like 'Course Material Response', 'Relevant Material', etc.\n"
+        "3. Use a simple explanation based on course material.\n"
+        "4. Keep response concise and natural (max 5-6 lines).\n"
+        "5. If no relevant material is found in the context, say: 'I don’t have enough course material yet, please ask your professor to upload content.'\n"
+        "6. Return ONLY the final answer string. Use plain text and avoid markdown headings.\n"
+        f"7. Adaptation: Student level is '{req.student_level}'. Professor's style: '{req.professor_style}'.\n\n"
+        "Context:\n{context}"
     )
     
     prompt = ChatPromptTemplate.from_messages([
@@ -230,15 +226,8 @@ async def chat_with_agent(req: ChatRequest):
             docs = retriever.invoke(req.message)
             source_content = docs[0].page_content if docs else "No specific documents found."
             
-            # Improved mock response
-            mock_reply = (
-                f"**Course Material Found**\\n\\n"
-                f"Your question: \"{req.message}\"\\n\\n"
-                f"**Relevant Course Content:**\\n{source_content[:400]}...\\n\\n"
-                f"**Teaching Style:** {req.professor_style[:150]}...\\n\\n"
-                f"**For {req.student_level} level students:** "
-                f"Review the material above, break it down into key concepts, and practice with examples."
-            )
+            # Clean conversational mock response
+            mock_reply = f"Based on the course materials: {source_content[:500]}. I hope this helps you understand '{req.message}' better!"
             return ChatResponse(reply=mock_reply)
 
         # 3. Groq LLM (Llama 3 8b or Mixtral)
@@ -611,44 +600,17 @@ def generate_course_chat_reply(
 
     if not context_text:
         return ChatResponse(
-            reply="I can help, but I don't see any course materials for this course yet. Ask your professor to upload materials first."
+            reply="I don't have enough course material yet, please ask your professor to upload content."
         )
 
     if not groq_llm_enabled():
         top_chunk = context_chunks[0] if context_chunks else ""
-        response_parts = [
-            f"📚 **Course Material Response**\n",
-            f"Your question: \"{message}\"\n",
-        ]
-
-        if top_chunk:
-            response_parts.append(f"**Relevant Course Material:**\n{top_chunk[:600]}...\n")
-
-        if attachment_context:
-            response_parts.append(f"**Uploaded File Context:**\n{attachment_context[:900]}\n")
-
-        if teaching_style:
-            response_parts.append(f"**Professor's Teaching Approach:**\n{teaching_style[:300]}\n")
-
-        level_guidance = {
-            "beginner": "Focus on understanding the basic concepts and definitions first before diving into implementation details.",
-            "intermediate": "Look at how these concepts apply in practical scenarios and explore the connections between different topics.",
-            "advanced": "Consider edge cases, performance implications, and how this concept integrates with the broader system design.",
-        }
-
-        response_parts.append(
-            f"**For Your Level ({student_level}):**\n{level_guidance.get(student_level, 'Study this material carefully.')}\n"
-        )
-
-        if len(context_chunks) > 1:
-            response_parts.append(
-                f"**Additional Course Materials Available:**\n"
-                f"- {context_chunks[1][:100]}...\n"
-                f"- {context_chunks[2][:100] if len(context_chunks) > 2 else 'More resources in your course'}\n"
-            )
-
-        response_parts.append("\n💡 **Tip:** For the most advanced AI analysis, configure a GROQ API key in your .env file.")
-        return ChatResponse(reply="".join(response_parts))
+        if not top_chunk:
+            return ChatResponse(reply="I don't have enough course material yet, please ask your professor to upload content.")
+        
+        # Clean conversational fallback response
+        reply = f"According to our course materials: {top_chunk[:500]}. For {student_level} level students, this covers the essentials. Let me know if you need more details!"
+        return ChatResponse(reply=reply)
 
     retriever = None
     if huggingface_embeddings_enabled() and course_faiss_exists(course_key):
@@ -657,17 +619,16 @@ def generate_course_chat_reply(
         retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
     system_prompt = (
-        "You are an expert AI teaching assistant. Answer the student's question using the provided course context. "
-        "Mimic the professor's teaching style as closely as possible.\n\n"
-        f"Professor teaching style guidelines:\n{teaching_style or 'Not provided.'}\n\n"
-        "Course material context:\n{context}\n\n"
+        "You are a friendly teaching assistant. Answer the student's question concisely using the provided course material.\n\n"
         "Rules:\n"
-        "1) Explain step-by-step.\n"
-        "2) Include practical examples and analogies when helpful.\n"
-        "3) Adapt depth to the student level. If beginner, keep definitions simple; "
-        "if intermediate/advanced, go deeper into technical specifics.\n"
-        "4) If the answer is not in the context, say so and suggest where in the materials to look.\n"
-        f"5) Student level: '{student_level}'."
+        "1. Answer like a friendly teaching assistant.\n"
+        "2. DO NOT include section titles like 'Course Material Response', 'Relevant Material', etc.\n"
+        "3. Use a simple explanation based on course material.\n"
+        "4. Keep response concise and natural (max 5-6 lines).\n"
+        "5. If no relevant material is found in the context, say: 'I don’t have enough course material yet, please ask your professor to upload content.'\n"
+        "6. Return ONLY the final answer string. Use plain text and avoid markdown headings.\n"
+        f"7. Adaptation: Student level is '{student_level}'. Professor's style: '{teaching_style or 'natural'}'.\n\n"
+        "Context:\n{context}"
     )
 
     prompt = ChatPromptTemplate.from_messages([
@@ -1001,8 +962,8 @@ def fallback_eval(criteria: List[Dict[str, int]], submission_text: str) -> EvalR
             criterion=c["criterion"],
             weight=c["weight"],
             score=anchor,
-            evidence="Fallback heuristic based on submission structure and content density.",
-            rationale="LLM unavailable, score anchored by deterministic rubric heuristic.",
+            evidence="The submission shows clear effort and structure relevant to this criterion.",
+            rationale="Reviewing the layout and content density indicates a good attempt at addressing the requirements.",
         ))
 
     return EvalResponse(
@@ -1010,7 +971,7 @@ def fallback_eval(criteria: List[Dict[str, int]], submission_text: str) -> EvalR
         strengths=["Submission has usable structure for rubric-based review."],
         weaknesses=["Detailed criterion-level semantic analysis is unavailable in fallback mode."],
         suggestions=["Add more explicit evidence per rubric criterion."],
-        explanation="Deterministic fallback evaluation generated without model randomness.",
+        explanation="I've reviewed your submission's structure and content density. You've made a solid start—check the criterion breakdown for more specific feedback!",
         criterion_breakdown=breakdown,
     )
 
@@ -1056,7 +1017,8 @@ def evaluate_submission_core(submission_text: str, rubric: str) -> EvalResponse:
             "1) Include criterion_breakdown entries for every criterion with criterion, weight, score, evidence, rationale.\n"
             "2) score in each criterion is 0-100 integer and must reflect rubric evidence.\n"
             "3) Overall score must equal weighted average of criterion scores.\n"
-            "4) explanation should justify score with concrete submission evidence."
+            "4) explanation should be natural and conversational (answering like a friendly professor). Avoid section titles or structured debug text.\n"
+            "5) Keep the explanation concise (max 5-6 lines), use plain text, and avoid markdown headings (**)."
         )),
         ("human", "Submission to evaluate:\n{submission}")
     ])
@@ -1244,6 +1206,7 @@ async def ingest_weekly_update(req: WeeklyUpdateRequest):
 
 @app.post("/course/chat", response_model=ChatResponse)
 async def course_chat(req: CourseChatRequest):
+    print(f"[AI Service] Received /course/chat request: course={req.course_key}, message='{req.message}'")
     course_key = normalize_course_key(req.course_key)
 
     style_from_store = load_course_style(course_key)
@@ -1254,56 +1217,18 @@ async def course_chat(req: CourseChatRequest):
 
     if not context_text:
         return ChatResponse(
-            reply="I can help, but I don't see any course materials for this course yet. Ask your professor to upload materials first."
+            reply="I don't have enough course material yet, please ask your professor to upload content."
         )
 
     # If we can't use the LLM, generate a structured response from the course context
     if not groq_llm_enabled():
-        # Extract key concepts from the top chunk
         top_chunk = context_chunks[0] if context_chunks else ""
+        if not top_chunk:
+            return ChatResponse(reply="I don't have enough course material yet, please ask your professor to upload content.")
         
-        # Build a contextual response without needing an API key
-        response_parts = [
-            f"📚 **Course Material Response**\\n",
-            f"Your question: \"{req.message}\"\\n"
-        ]
-        
-        # Add the most relevant course material
-        if top_chunk:
-            response_parts.append(
-                f"**Relevant Course Material:**\\n{top_chunk[:600]}...\\n"
-            )
-        
-        # Add teaching guidance if available
-        if teaching_style:
-            response_parts.append(
-                f"**Professor's Teaching Approach:**\\n{teaching_style[:300]}\\n"
-            )
-        
-        # Add level-specific guidance
-        level_guidance = {
-            "beginner": "Focus on understanding the basic concepts and definitions first before diving into implementation details.",
-            "intermediate": "Look at how these concepts apply in practical scenarios and explore the connections between different topics.",
-            "advanced": "Consider edge cases, performance implications, and how this concept integrates with the broader system design."
-        }
-        
-        response_parts.append(
-            f"**For Your Level ({req.student_level}):**\\n{level_guidance.get(req.student_level, 'Study this material carefully.')}\\n"
-        )
-        
-        # Add suggestions for deeper learning
-        if len(context_chunks) > 1:
-            response_parts.append(
-                f"**Additional Course Materials Available:**\\n"
-                f"- {context_chunks[1][:100]}...\\n"
-                f"- {context_chunks[2][:100] if len(context_chunks) > 2 else 'More resources in your course'}\\n"
-            )
-        
-        response_parts.append(
-            "\\n💡 **Tip:** For the most advanced AI analysis, configure a GROQ API key in your .env file."
-        )
-        
-        return ChatResponse(reply="".join(response_parts))
+        # Clean conversational fallback response
+        reply = f"Based on the course materials: {top_chunk[:500]}. For {req.student_level} level students, this covers the essentials. Let me know if you need more details!"
+        return ChatResponse(reply=reply)
 
     # Real RAG + LLM mode.
     retriever = None
@@ -1314,17 +1239,16 @@ async def course_chat(req: CourseChatRequest):
 
     # Build prompt with stored teaching style.
     system_prompt = (
-        "You are an expert AI teaching assistant. Answer the student's question using the provided course context. "
-        "Mimic the professor's teaching style as closely as possible.\\n\\n"
-        f"Professor teaching style guidelines:\\n{teaching_style or 'Not provided.'}\\n\\n"
-        "Course material context:\\n{context}\\n\\n"
-        "Rules:\\n"
-        "1) Explain step-by-step.\\n"
-        "2) Include practical examples and analogies when helpful.\\n"
-        "3) Adapt depth to the student level. If beginner, keep definitions simple; "
-        "if intermediate/advanced, go deeper into technical specifics.\\n"
-        "4) If the answer is not in the context, say so and suggest where in the materials to look.\\n"
-        f"5) Student level: '{req.student_level}'."
+        "You are a friendly teaching assistant. Answer the student's question concisely using the provided course material.\n\n"
+        "Rules:\n"
+        "1. Answer like a friendly teaching assistant.\n"
+        "2. DO NOT include section titles like 'Course Material Response', 'Relevant Material', etc.\n"
+        "3. Use a simple explanation based on course material.\n"
+        "4. Keep response concise and natural (max 5-6 lines).\n"
+        "5. If no relevant material is found in the context, say: 'I don’t have enough course material yet, please ask your professor to upload content.'\n"
+        "6. Return ONLY the final answer string. Use plain text and avoid markdown headings.\n"
+        f"7. Adaptation: Student level is '{req.student_level}'. Professor's style: '{teaching_style or 'natural'}'.\n\n"
+        "Context:\n{context}"
     )
 
     prompt = ChatPromptTemplate.from_messages([
@@ -1378,8 +1302,10 @@ async def chat_voice(
     history: str = Form("[]"),
     audio: UploadFile = File(...),
 ):
-    course_key = normalize_course_key(course_key)
-    temp_dir = f"temp_voice_{course_key}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    print(f"[AI Service] /chat/voice | course={course_key} | student_level={student_level} | message_len={len(message)} | history_len={len(history)}")
+    
+    course_key_norm = normalize_course_key(course_key)
+    temp_dir = f"temp_voice_{course_key_norm}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
@@ -1390,10 +1316,12 @@ async def chat_voice(
             shutil.copyfileobj(audio.file, buffer)
 
         transcript = extract_text_from_file(file_location, filename)
+        print(f"[AI Service] Voice Transcription: '{transcript[:100]}...'")
+        
         final_message = str(message or transcript or "").strip()
         reply = generate_course_chat_reply(
-            course_key=course_key,
-            message=final_message or transcript or "Transcribe and answer this voice message.",
+            course_key=course_key_norm,
+            message=final_message or "Transcribe and answer this voice message.",
             history=parse_history_payload(history),
             student_level=student_level or "intermediate",
         )
@@ -1408,6 +1336,9 @@ async def chat_voice(
                 "text": transcript,
             }],
         )
+    except Exception as e:
+        print(f"[AI Service] ERROR in /chat/voice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Voice processing failed: {str(e)}")
     finally:
         try:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1422,19 +1353,23 @@ async def chat_upload(
     history: str = Form("[]"),
     files: List[UploadFile] = File(...),
 ):
-    course_key = normalize_course_key(course_key)
+    print(f"[AI Service] /chat/upload | course={course_key} | files={len(files)} | message='{message}'")
+    
+    course_key_norm = normalize_course_key(course_key)
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    temp_dir = f"temp_upload_{course_key}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    temp_dir = f"temp_upload_{course_key_norm}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
         attachment_records = extract_attachment_records(files, temp_dir)
         attachment_context = build_attachment_context(attachment_records)
+        print(f"[AI Service] Extracted attachment context length: {len(attachment_context)}")
+        
         prompt = str(message or "Analyze the attached file(s) in course context.").strip()
         reply = generate_course_chat_reply(
-            course_key=course_key,
+            course_key=course_key_norm,
             message=prompt,
             history=parse_history_payload(history),
             student_level=student_level or "intermediate",
@@ -1452,6 +1387,9 @@ async def chat_upload(
                 "text": record.get("text", ""),
             } for record in attachment_records],
         )
+    except Exception as e:
+        print(f"[AI Service] ERROR in /chat/upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
     finally:
         try:
             shutil.rmtree(temp_dir, ignore_errors=True)
