@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Clock3, FileAudio2, FileText, Mic, MicOff, Paperclip, Send, Sparkles, Trash2, Upload, User, X } from 'lucide-react';
+import { Bot, FileAudio2, FileText, Mic, MicOff, Paperclip, Send, Sparkles, Trash2, Upload, User, X } from 'lucide-react';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
 import { useActiveCourse } from '../context/ActiveCourseContext';
@@ -44,50 +44,22 @@ const normalizeDraftFile = (file) => ({
   previewUrl: String(file?.type || '').startsWith('image/') ? URL.createObjectURL(file) : '',
 });
 
-const pickAudioMimeType = () => {
-  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
-    return '';
-  }
-
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/mp4',
-    'audio/ogg;codecs=opus',
-    'audio/ogg',
-  ];
-
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || '';
-};
-
-const extensionForAudioMime = (mimeType) => {
-  const value = String(mimeType || '').toLowerCase();
-  if (value.includes('mp4')) return 'm4a';
-  if (value.includes('aac')) return 'aac';
-  if (value.includes('ogg')) return 'ogg';
-  if (value.includes('wav')) return 'wav';
-  if (value.includes('mpeg') || value.includes('mp3')) return 'mp3';
-  return 'webm';
-};
-
 const Chatbot = () => {
   const [studentLevel, setStudentLevel] = useState('beginner');
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [isListening, setIsListening] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [draftFiles, setDraftFiles] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
   const messagesEndRef = useRef(null);
   const bodyRef = useRef(null);
   const fileInputRef = useRef(null);
-  const recorderRef = useRef(null);
-  const recordingStreamRef = useRef(null);
-  const recordingChunksRef = useRef([]);
-  const recordingTimerRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const finalTranscriptRef = useRef('');
   const draftFilesRef = useRef([]);
   const { activeCourseId, activeCourse } = useActiveCourse();
   const activeCourseKey = useMemo(() => activeCourse?.courseCode || '', [activeCourse]);
@@ -108,9 +80,70 @@ const Chatbot = () => {
     draftFilesRef.current = draftFiles;
   }, [draftFiles]);
 
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      // Simple Safari detection
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
+      if (SpeechRecognition && !isSafari) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => {
+          console.log('Speech recognition: started');
+          finalTranscriptRef.current = '';
+        };
+
+        recognition.onresult = (event) => {
+          console.log('Speech recognition: result event received');
+          let interimTranscript = '';
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              finalTranscriptRef.current += transcript;
+            } else {
+              interimTranscript += transcript;
+            }
+          }
+          // Update the UI input field with the live transcript
+          setInput(finalTranscriptRef.current + interimTranscript);
+        };
+
+        recognition.onend = () => {
+          console.log('Speech recognition: ended');
+          setIsListening(false);
+          const transcript = finalTranscriptRef.current.trim();
+          if (transcript) {
+            console.log('Speech recognition: captured transcript:', transcript);
+            submitTextMessage(transcript);
+          } else {
+            console.warn('Speech recognition: ended without transcript');
+          }
+          finalTranscriptRef.current = '';
+        };
+
+        recognition.onerror = (event) => {
+          setIsListening(false);
+          if (event.error === 'not-allowed') {
+            setErrorMessage('Microphone permission denied. Please check site settings.');
+          } else if (event.error === 'no-speech') {
+            console.warn('Speech recognition: No speech detected');
+          } else {
+            setErrorMessage(`Speech recognition error: ${event.error}`);
+            console.error('Speech recognition error:', event.error);
+          }
+        };
+
+        recognitionRef.current = recognition;
+      }
+    }
+  }, []);
+
   useEffect(() => () => {
-    recordingTimerRef.current && clearInterval(recordingTimerRef.current);
-    recordingStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+    recognitionRef.current?.stop();
     draftFilesRef.current.forEach((item) => {
       if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
     });
@@ -169,10 +202,14 @@ const Chatbot = () => {
     setMessages((prev) => [...prev, userMessage, agentMessage].filter(Boolean));
   };
 
-  const submitTextMessage = async () => {
-    const textToSend = input.trim();
+  const submitTextMessage = async (textOverride) => {
+    const textToSend = (typeof textOverride === 'string' ? textOverride : input).trim();
     if (!textToSend || !activeCourseKey || loading) return;
 
+    if (typeof textOverride === 'string') {
+      setIsProcessingVoice(true);
+      setInput(textOverride);
+    }
     setLoading(true);
     setErrorMessage('');
 
@@ -187,10 +224,10 @@ const Chatbot = () => {
         headers: getAuthHeaders(),
       });
 
-      appendConversation(
-        normalizeServerMessage(res.data?.message) || { sender: 'user', type: 'text', content: textToSend, text: textToSend, metadata: {} },
-        normalizeServerMessage(res.data?.response) || { sender: 'agent', type: 'text', content: res.data?.reply || '', text: res.data?.reply || '', metadata: {} }
-      );
+      const userMsg = normalizeServerMessage(res.data?.message) || { sender: 'user', type: 'text', content: textToSend, text: textToSend, metadata: {} };
+      const agentMsg = normalizeServerMessage(res.data?.response) || { sender: 'agent', type: 'text', content: res.data?.reply || '', text: res.data?.reply || '', metadata: {} };
+
+      appendConversation(userMsg, agentMsg);
       setInput('');
     } catch (err) {
       appendConversation(
@@ -200,6 +237,7 @@ const Chatbot = () => {
       setErrorMessage(err.response?.data?.message || 'Failed to send message.');
     } finally {
       setLoading(false);
+      setIsProcessingVoice(false);
     }
   };
 
@@ -249,126 +287,39 @@ const Chatbot = () => {
     }
   };
 
-  const stopRecordingStream = () => {
-    recordingTimerRef.current && clearInterval(recordingTimerRef.current);
-    recordingTimerRef.current = null;
-    recordingStreamRef.current?.getTracks?.().forEach((track) => track.stop());
-    recordingStreamRef.current = null;
-  };
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+    } else {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
-  const submitVoiceMessage = async (audioBlob) => {
-    if (!activeCourseKey || loading || !audioBlob) return;
+      if (!SpeechRecognition) {
+        alert('Voice input is not supported in this browser.');
+        return;
+      }
 
-    const mimeType = audioBlob.type || pickAudioMimeType() || 'audio/webm';
-    const ext = extensionForAudioMime(mimeType);
-    const file = new File([audioBlob], `voice-${Date.now()}.${ext}`, { type: mimeType });
-    const formData = new FormData();
-    formData.append('course_id', activeCourseId || '');
-    formData.append('course_key', activeCourseKey);
-    formData.append('student_level', studentLevel);
-    formData.append('message', input.trim());
-    formData.append('history', JSON.stringify(buildHistory()));
-    formData.append('audio', file);
+      if (isSafari) {
+        alert('Voice input works best in Google Chrome. Safari does not support this feature properly.');
+        return;
+      }
 
-    setLoading(true);
-    setErrorMessage('');
+      if (!recognitionRef.current) {
+        setErrorMessage('Speech recognition is not initialized.');
+        return;
+      }
 
-    try {
-      const res = await axios.post(`${API_BASE}/api/chat/voice`, formData, {
-        headers: getAuthHeaders(),
-      });
-
-      appendConversation(
-        normalizeServerMessage(res.data?.message) || {
-          sender: 'user',
-          type: 'voice',
-          content: res.data?.transcript || input.trim() || 'Voice message',
-          text: res.data?.transcript || input.trim() || 'Voice message',
-          fileUrl: res.data?.attachments?.[0]?.fileUrl || '',
-          metadata: {
-            transcript: res.data?.transcript || '',
-            files: res.data?.attachments || [],
-          },
-        },
-        normalizeServerMessage(res.data?.response) || { sender: 'agent', type: 'text', content: res.data?.reply || '', text: res.data?.reply || '', metadata: {} }
-      );
-      setInput('');
-    } catch (err) {
-      setErrorMessage(err.response?.data?.message || 'Failed to transcribe voice message.');
-    } finally {
-      setLoading(false);
+      setErrorMessage('');
+      try {
+        finalTranscriptRef.current = '';
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch (err) {
+        console.error('Speech start error:', err);
+        setErrorMessage('Could not start microphone. If already listening, please stop first.');
+      }
     }
-  };
-
-  const startRecording = async () => {
-    if (!activeCourseKey || loading || isRecording) return;
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      setErrorMessage('This browser does not support audio recording.');
-      return;
-    }
-
-    if (typeof window !== 'undefined' && window.isSecureContext === false) {
-      setErrorMessage('Microphone access requires HTTPS (or localhost).');
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = pickAudioMimeType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      recordingChunksRef.current = [];
-
-      recorder.onerror = () => {
-        setErrorMessage('Recording failed. Please try again.');
-        stopRecordingStream();
-        setIsRecording(false);
-      };
-
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          recordingChunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onstop = async () => {
-        stopRecordingStream();
-        setIsRecording(false);
-        const blob = new Blob(recordingChunksRef.current, { type: mimeType || 'audio/webm' });
-        recordingChunksRef.current = [];
-        if (blob.size > 0) {
-          await submitVoiceMessage(blob);
-        } else {
-          setErrorMessage('No audio captured. Please try again.');
-        }
-      };
-
-      // Use a timeslice so browsers reliably flush chunks.
-      recorder.start(250);
-      recorderRef.current = recorder;
-      recordingStreamRef.current = stream;
-      setIsRecording(true);
-      setRecordingSeconds(0);
-      recordingTimerRef.current = setInterval(() => {
-        setRecordingSeconds((prev) => prev + 1);
-      }, 1000);
-    } catch (err) {
-      setErrorMessage(err.message || 'Unable to access the microphone.');
-      stopRecordingStream();
-      setIsRecording(false);
-    }
-  };
-
-  const stopRecording = () => {
-    if (!isRecording) return;
-    recorderRef.current?.stop();
-  };
-
-  const toggleRecording = () => {
-    if (isRecording) {
-      stopRecording();
-      return;
-    }
-    startRecording();
   };
 
   const handleFileSelection = (selectedFiles) => {
@@ -396,7 +347,7 @@ const Chatbot = () => {
 
   const handleSend = async (event) => {
     if (event && event.preventDefault) event.preventDefault();
-    if (loading || isRecording) return;
+    if (loading || isListening) return;
     if (draftFiles.length > 0) {
       await submitUploadMessage();
       return;
@@ -414,18 +365,6 @@ const Chatbot = () => {
         <div key={`${fileName}-${index}`} className="chatgpt-attachment chatgpt-attachment--image">
           <img src={url} alt={fileName} className="chatgpt-image-preview" />
           <span>{fileName}</span>
-        </div>
-      );
-    }
-
-    if (kind === 'voice' || kind === 'audio') {
-      return (
-        <div key={`${fileName}-${index}`} className="chatgpt-attachment chatgpt-attachment--audio">
-          <div className="chatgpt-file-icon"><FileAudio2 size={16} /></div>
-          <div>
-            <strong>{fileName}</strong>
-            <audio controls src={url} className="chatgpt-audio-player" />
-          </div>
         </div>
       );
     }
@@ -451,25 +390,6 @@ const Chatbot = () => {
       <div key={`${idx}-${kind}`} className={`chatgpt-row ${isUser ? 'is-user' : 'is-agent'}`}>
         <div className="chatgpt-avatar">{isUser ? <User size={14} /> : <Bot size={14} />}</div>
         <div className="chatgpt-bubble chatgpt-bubble--rich">
-          {(kind === 'voice' || attachments.some((item) => String(item.kind || item.file_type).toLowerCase() === 'audio')) && (
-            <div className="chatgpt-voice-block">
-              {message?.fileUrl ? <audio controls src={getAbsoluteUrl(message.fileUrl)} className="chatgpt-audio-player" /> : null}
-              {text ? <p>{text}</p> : null}
-            </div>
-          )}
-
-          {kind === 'image' || attachments.some((item) => String(item.kind || item.file_type).toLowerCase() === 'image') ? (
-            <div className="chatgpt-attachment-grid">
-              {attachments.filter((item) => String(item.kind || item.file_type).toLowerCase() === 'image').map(renderAttachment)}
-            </div>
-          ) : null}
-
-          {kind === 'document' || attachments.some((item) => String(item.kind || item.file_type).toLowerCase() === 'document') ? (
-            <div className="chatgpt-attachment-grid">
-              {attachments.filter((item) => String(item.kind || item.file_type).toLowerCase() !== 'image').map(renderAttachment)}
-            </div>
-          ) : null}
-
           {text && kind === 'text' ? <div>{text}</div> : null}
           {text && kind !== 'text' ? <div className="chatgpt-message-caption">{text}</div> : null}
         </div>
@@ -604,27 +524,30 @@ const Chatbot = () => {
             </button>
             <button
               type="button"
-              onClick={toggleRecording}
+              onClick={toggleListening}
               disabled={!activeCourseKey || loading}
-              className={`chatgpt-send ${isRecording ? 'is-recording' : ''}`}
-              title={isRecording ? 'Stop recording' : 'Record voice message'}
+              className={`chatgpt-send ${isListening ? 'is-listening' : ''}`}
+              title={isListening ? 'Stop listening' : 'Start voice assistant'}
             >
-              {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
+              {isListening ? <MicOff size={16} /> : <Mic size={16} />}
             </button>
-            <button type="submit" disabled={loading || isRecording || !activeCourseKey || (!input.trim() && draftFiles.length === 0)} className="chatgpt-send">
+            <button type="submit" disabled={loading || isListening || !activeCourseKey || (!input.trim() && draftFiles.length === 0)} className="chatgpt-send">
               <Send size={16} />
             </button>
           </div>
         </div>
 
-        {isRecording && (
-          <div className="chatgpt-recording-bar">
-            <span className="chatgpt-recording-dot" />
-            Recording voice message
-            <span className="chatgpt-recording-time">
-              <Clock3 size={13} />
-              {String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')}
-            </span>
+        {isListening && (
+          <div className="chatgpt-recording-bar is-listening-bar">
+            <span className="chatgpt-recording-dot pulse" />
+            Listening...
+          </div>
+        )}
+
+        {isProcessingVoice && (
+          <div className="chatgpt-recording-bar is-processing-bar">
+            <Sparkles size={14} className="spin-slow" />
+            Processing voice...
           </div>
         )}
 

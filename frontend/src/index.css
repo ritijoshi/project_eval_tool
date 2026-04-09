@@ -3499,4 +3499,55 @@ a:hover {
   }
 }
 
-@keyframes pulse { 0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.4); } 70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(255, 107, 107, 0); } 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); } }
+@keyframes pulse { 
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.4); } 
+  70% { transform: scale(1.1); box-shadow: 0 0 0 10px rgba(255, 59, 48, 0); } 
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); } 
+}
+
+.is-listening-bar {
+  background: rgba(255, 59, 48, 0.1) !important;
+  color: #FF3B30 !important;
+  border: 1px solid rgba(255, 59, 48, 0.2) !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.is-processing-bar {
+  background: rgba(10, 132, 255, 0.1) !important;
+  color: var(--primary) !important;
+  border: 1px solid rgba(10, 132, 255, 0.2) !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.chatgpt-send.is-listening {
+  background: #FF3B30 !important;
+  color: white !important;
+  box-shadow: 0 0 15px rgba(255, 59, 48, 0.5) !important;
+  animation: pulse 2s infinite;
+}
+
+.pulse {
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin-slow {
+  animation: spin-slow 2s linear infinite;
+}
+

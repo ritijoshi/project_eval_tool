@@ -148,28 +148,43 @@ const appendAttachmentSummary = (prompt, attachments = []) => {
     return `${prompt}\n\nUploaded attachments:\n${summary}`;
 };
 
-const callAiService = async ({ endpoint, courseKey, message, history, studentLevel, files = [] }) => {
+const callAiService = async ({ endpoint, courseKey, message, history, studentLevel, files = [], mode }) => {
     const form = new FormData();
     form.append('course_key', courseKey);
     form.append('message', message);
     form.append('student_level', studentLevel || 'intermediate');
     form.append('history', JSON.stringify(history || []));
 
-    files.forEach((file) => {
-        form.append('files', file.buffer, {
-            filename: file.originalname,
-            contentType: file.mimetype,
+    if (mode === 'voice' && files.length > 0) {
+        // Voice endpoint expects 'audio' field
+        const audioFile = files[0];
+        form.append('audio', audioFile.buffer, {
+            filename: audioFile.originalname,
+            contentType: audioFile.mimetype,
         });
-    });
+    } else {
+        // Upload endpoint expects 'files' field
+        files.forEach((file) => {
+            form.append('files', file.buffer, {
+                filename: file.originalname,
+                contentType: file.mimetype,
+            });
+        });
+    }
 
-    const response = await axios.post(`${AI_BASE}${endpoint}`, form, {
-        headers: form.getHeaders(),
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        timeout: 300000,
-    });
-
-    return response.data || {};
+    console.log(`[Backend] Forwarding request to AI Service: ${endpoint} (mode: ${mode})`);
+    try {
+        const response = await axios.post(`${AI_BASE}${endpoint}`, form, {
+            headers: form.getHeaders(),
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            timeout: 300000,
+        });
+        return response.data || {};
+    } catch (error) {
+        console.error(`[Backend] AI Service Error (${endpoint}):`, error.response?.data || error.message);
+        throw error;
+    }
 };
 
 const processMultimodalChat = async ({ req, res, mode, files = [] }) => {
@@ -203,21 +218,27 @@ const processMultimodalChat = async ({ req, res, mode, files = [] }) => {
                 ? '/chat/upload'
                 : '/course/chat';
 
-        const serviceData = storedFiles.length > 0 || mode === 'voice'
-            ? await callAiService({
+        let serviceData;
+        if (storedFiles.length > 0 || mode === 'voice') {
+            serviceData = await callAiService({
                 endpoint,
                 courseKey: normalizedCourseKey,
-                message: prompt,
+                message: messageText || fallbackPrompt,
                 history,
                 studentLevel: req.body?.student_level || 'intermediate',
                 files,
-            })
-            : await axios.post(`${AI_BASE}/course/chat`, {
+                mode,
+            });
+        } else {
+            console.log(`[Backend] Forwarding text chat to AI Service: /course/chat`);
+            const response = await axios.post(`${AI_BASE}/course/chat`, {
                 course_key: normalizedCourseKey,
                 message: userRecordText,
                 history,
                 student_level: req.body?.student_level || 'intermediate',
-            }).then((response) => response.data || {});
+            });
+            serviceData = response.data || {};
+        }
 
         let reply = String(serviceData?.reply || '').trim();
         reply = await getPendingCourseUpdateReply(userId, normalizedCourseKey, reply);
