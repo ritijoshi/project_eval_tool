@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { API_BASE } from '../config/api';
 
 export function useEvaluationSocket(sessionId) {
     const [progress, setProgress] = useState(0);
@@ -18,7 +19,7 @@ export function useEvaluationSocket(sessionId) {
         const token = localStorage.getItem('token');
 
         // Connect specifically for this widget
-        socketRef.current = io('http://localhost:5001', {
+        socketRef.current = io(API_BASE, {
             auth: { token },
             transports: ['websocket'],
             reconnectionAttempts: 5,

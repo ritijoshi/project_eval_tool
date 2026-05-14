@@ -1,1 +1,41 @@
 /* StudentRow styles - uses standard dashboard classes */
+.metric-placeholder {
+	font-size: 0.85rem;
+	color: #6b7280;
+	padding: 6px 0;
+}
+
+.feedback-placeholder {
+	color: #6b7280;
+	font-style: italic;
+}
+
+.score-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.score-breakdown {
+	display: flex;
+	height: 6px;
+	border-radius: 999px;
+	overflow: hidden;
+	background: rgba(148, 163, 184, 0.2);
+	box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.25);
+}
+
+.breakdown-seg {
+	height: 100%;
+}
+
+.seg-topic { background: #2dd4bf; }
+.seg-concept { background: #38bdf8; }
+.seg-accuracy { background: #fbbf24; }
+.seg-complete { background: #a3e635; }
+.seg-clarity { background: #fb7185; }
+.seg-flow { background: #c084fc; }
+.seg-critical { background: #f97316; }
+.seg-keyword { background: #94a3b8; }
+.seg-concise { background: #f472b6; }
+.seg-confidence { background: #60a5fa; }

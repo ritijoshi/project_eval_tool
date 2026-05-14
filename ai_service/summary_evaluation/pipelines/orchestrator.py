@@ -11,6 +11,7 @@ from summary_evaluation.utils.html_cleaner import clean_html_submission, extract
 from summary_evaluation.services.embedding_service import get_embedder, evaluate_semantic_score
 from summary_evaluation.agents.transcript_agent import run_transcript_agent
 from summary_evaluation.agents.feedback_agent import generate_feedback
+from summary_evaluation.agents.ai_evaluator import evaluate_summary_with_ai, format_qualitative_feedback, fallback_evaluation
 
 # Optional text splitting strategy
 try:
@@ -42,13 +43,17 @@ async def process_single_student(
     filepath: str, 
     transcript_vecs: List[List[float]], 
     concept_vecs: List[List[float]],
-    core_concepts: List[str]
+    core_concepts: List[str],
+    transcript_text: str,
+    transcript_chunks: List[str]
 ) -> dict:
     """ Evaluates one student. Failures here do not crash the batch. """
     try:
         print(f"DEBUG: Analyzing student submission -> {filepath}")
         # Extract identity based on the filename deterministic logic
         student_name, roll_number = extract_identity_from_filename(filepath)
+        if roll_number == "UNKNOWN" or not student_name:
+            print(f"WARNING: Could not parse student identity from path: {filepath}")
         
         lower_path = filepath.lower()
         if lower_path.endswith('.pdf') or lower_path.endswith('.docx'):
@@ -69,18 +74,48 @@ async def process_single_student(
 
         # Math Score (Deterministic)
         score, metrics = evaluate_semantic_score(student_text, transcript_vecs, concept_vecs)
-        
-        # LLM Feedback (Generative)
-        feedback = generate_feedback(student_text, score, core_concepts)
+
+        if not transcript_text.strip():
+            print("WARNING: Transcript text is empty; AI evaluation will rely on fallback heuristics.")
+        if not transcript_chunks:
+            print("WARNING: Transcript chunks are empty; LLM evaluation will have limited context.")
+
+        # AI Explainability Metrics + Structured Feedback
+        try:
+            ai_evaluation = evaluate_summary_with_ai(
+                student_summary=student_text,
+                transcript_text=transcript_text,
+                core_concepts=core_concepts,
+                deterministic_metrics=metrics,
+                transcript_vecs=transcript_vecs,
+                transcript_chunks=transcript_chunks
+            )
+        except Exception as e:
+            print(f"ERROR: AI evaluation failed for {filepath}: {e}")
+            ai_evaluation = fallback_evaluation(student_text, metrics, core_concepts)
+
+        if not ai_evaluation or not ai_evaluation.get("metrics"):
+            ai_evaluation = fallback_evaluation(student_text, metrics, core_concepts)
+
+        final_score = ai_evaluation.get("overallScore")
+        if final_score is None:
+            final_score = score
+
+        # Qualitative Feedback (AI structured, fallback to legacy if needed)
+        feedback = format_qualitative_feedback(ai_evaluation)
+        if not feedback:
+            feedback = generate_feedback(student_text, final_score, core_concepts)
 
         return {
             "success": True,
             "studentName": student_name,
             "rollNumber": roll_number,
+            "rollNo": roll_number,
             "summaryText": student_text[:5000],  # Save a snippet to DB
-            "score": score,
+            "score": final_score,
             "feedback": feedback,
-            "metrics": metrics
+            "metrics": metrics,
+            "aiEvaluation": ai_evaluation
         }
     except Exception as e:
         log_event("N/A", "Student Eval", "FAILED", filepath)
@@ -88,6 +123,7 @@ async def process_single_student(
             "success": False,
             "studentName": "Error",
             "rollNumber": "UNKNOWN",
+            "rollNo": "UNKNOWN",
             "errorMessage": str(e)
         }
 
@@ -143,7 +179,14 @@ async def run_evaluation_pipeline(session_id: str, transcript_path: str, zip_pat
         async def sem_task(idx, filepath):
             async with semaphore:
                 # Calculate progress purely mathematically
-                result = await process_single_student(filepath, transcript_vecs, concept_vecs, core_concepts)
+                result = await process_single_student(
+                    filepath,
+                    transcript_vecs,
+                    concept_vecs,
+                    core_concepts,
+                    parsed_transcript,
+                    transcript_chunks
+                )
                 # Report this to node.js to bounce through websockets natively
                 await broadcast_progress(webhook_url, {
                     "sessionId": session_id,

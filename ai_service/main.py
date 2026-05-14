@@ -44,7 +44,6 @@ async def health_check():
 async def readiness_check():
     openai_key = os.environ.get("OPENAI_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
-    print(f"DEBUG GROQ KEY: '{groq_key}'")  
     return {
         "status": "ready",
         "dependencies": {
@@ -52,6 +51,8 @@ async def readiness_check():
             "llm_available": LLM_AVAILABLE,
             "openai_key_configured": bool(openai_key) and openai_key != "sk-placeholder",
             "groq_key_configured": bool(groq_key) and groq_key != "gsk-placeholder",
+            "groq_enabled": groq_llm_enabled(),
+            "groq_model": os.environ.get("GROQ_MODEL", "llama3-8b-8192")
         },
     }
 

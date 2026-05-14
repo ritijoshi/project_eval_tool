@@ -38,22 +38,43 @@ def get_submission_files(directory: str) -> list:
     Supports .html, .txt, .pdf, .docx format variations natively.
     """
     submission_files = []
+    onlinetext_files = []
     supported_ext = ('.html', '.txt', '.pdf', '.docx')
     print(f"DEBUG: Scanning directory '{directory}' for submissions...")
     
     total_files_scanned = 0
+    expected_submission_dirs = set()
+    found_onlinetext_dirs = set()
     for root, dirs, files in os.walk(directory):
+        # Track directories that follow the expected naming convention
+        dir_name = os.path.basename(root)
+        if dir_name.lower().endswith('_onlinetext'):
+            expected_submission_dirs.add(root)
+
         for file in files:
             # Skip hidden files or __MACOSX directories safely
             if file.startswith('.') or '__MACOSX' in root:
                 continue
                 
             total_files_scanned += 1
-            if file.lower().endswith(supported_ext):
+            if file.lower() == 'onlinetext.html':
+                onlinetext_files.append(os.path.join(root, file))
+                found_onlinetext_dirs.add(root)
+            elif file.lower().endswith(supported_ext):
                 submission_files.append(os.path.join(root, file))
             else:
                 print(f"WARNING: Skipping unsupported file format: {os.path.join(root, file)}")
-                
+
+    if onlinetext_files:
+        missing_expected = expected_submission_dirs - found_onlinetext_dirs
+        for missing_dir in sorted(missing_expected):
+            print(f"WARNING: Missing onlinetext.html in submission folder: {missing_dir}")
+        print(f"DEBUG: Found {len(onlinetext_files)} onlinetext.html submissions. Using these as canonical sources.")
+        return onlinetext_files
+
+    print(
+        "WARNING: No onlinetext.html files found. Falling back to generic supported submissions."
+    )
     print(f"DEBUG: Extraction Scan Complete. Scanned {total_files_scanned} user files. Found {len(submission_files)} supported submissions.")
     return submission_files
 

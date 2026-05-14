@@ -2,6 +2,18 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from tenacity import retry, wait_exponential, stop_after_attempt
 
+def _fallback_feedback(score: float, core_concepts: list) -> str:
+    concept_hint = ", ".join(core_concepts[:2]) if core_concepts else "the lecture's key concepts"
+    if score >= 8:
+        return (
+            f"Summary aligns with several core ideas, but it should explicitly connect {concept_hint}. "
+            "Improve structure by grouping related points into clearer paragraphs."
+        )
+    return (
+        f"Summary misses important ideas like {concept_hint}. "
+        "Expand coverage and add specific examples from the lecture to improve clarity."
+    )
+
 @retry(wait=wait_exponential(multiplier=2, min=2, max=10), stop=stop_after_attempt(3))
 def generate_feedback(student_summary: str, score: float, core_concepts: list) -> str:
     """
@@ -46,4 +58,4 @@ def generate_feedback(student_summary: str, score: float, core_concepts: list) -
         
     except Exception as e:
         print(f"Feedback Agent Failure: {str(e)}")
-        return "System was unable to generate personalized qualitative feedback at this time."
+        return _fallback_feedback(score, core_concepts)

@@ -5,20 +5,48 @@ from typing import Dict, Tuple
 
 def extract_identity_from_filename(filename: str) -> Tuple[str, str]:
     """
-    Attempts to deterministically extract Student Name and Roll Number from LMS filenames.
-    Typical format: StudentName_RollNumber_Assignment.html
+    Extracts Student Name and Roll Number from LMS filenames or parent folders.
+    Preferred format: studentName_rollNo_onlinetext (folder or file stem).
     Returns: (student_name, roll_number)
     """
     base_name = os.path.splitext(os.path.basename(filename))[0]
-    
-    # Regex: Letters/Spaces for name, followed by underscore, followed by Alphanumeric roll
-    # Example: "John Doe_CS102_Summary" -> "John Doe", "CS102"
-    match = re.match(r'^([a-zA-Z\s\-]+)_([a-zA-Z0-9]+)_?', base_name)
-    if match:
-        return match.group(1).strip(), match.group(2).strip()
-    
-    # Fallback: take the whole base name as the student name, Unknown for roll
-    return base_name.strip(), "UNKNOWN"
+    candidate = base_name
+
+    # If the file is the expected onlinetext.html, use the parent directory name.
+    if base_name.lower() == 'onlinetext':
+        parent = os.path.basename(os.path.dirname(filename))
+        if parent:
+            candidate = parent
+
+    # Primary pattern: studentName_rollNo_onlinetext (use right-split to preserve underscores in names)
+    lower_candidate = candidate.lower()
+    if lower_candidate.endswith('_onlinetext'):
+        base = candidate[: -len('_onlinetext')]
+        roll_number = ""
+        student_name = base.strip()
+
+        if '_' in base:
+            student_name, roll_number = base.rsplit('_', 1)
+        elif ' ' in base:
+            student_name, roll_number = base.rsplit(' ', 1)
+
+        student_name = student_name.strip()
+        roll_number = roll_number.strip()
+
+        if not roll_number or not re.match(r'^[A-Za-z0-9\-]+$', roll_number):
+            roll_number = ""
+    else:
+        # Fallback: studentName_rollNo
+        match = re.match(r'^(.+)_([\w\-]+)$', candidate)
+        if match:
+            student_name = match.group(1).strip()
+            roll_number = match.group(2).strip()
+        else:
+            return candidate.strip(), "UNKNOWN"
+
+    # Normalize whitespace for readability while preserving special characters.
+    student_name = re.sub(r'\s+', ' ', student_name.replace('_', ' ')).strip()
+    return student_name, roll_number or "UNKNOWN"
 
 def clean_html_submission(html_content: str) -> Dict[str, str]:
     """
@@ -27,6 +55,10 @@ def clean_html_submission(html_content: str) -> Dict[str, str]:
     Returns { 'text': str, 'meta_author': str }
     """
     soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Remove non-content elements before text extraction.
+    for tag in soup(['script', 'style', 'noscript']):
+        tag.decompose()
     
     meta_author = ""
     author_tag = soup.find('meta', attrs={'name': 'author'})

@@ -36,7 +36,7 @@ def evaluate_semantic_score(
        
     3. Completeness (20%): Length modifier heuristic.
     """
-    if not student_text.strip() or not transcript_vecs:
+    if not student_text.strip():
         return 0.0, {"similarity": 0.0, "coverage": 0.0, "completeness": 0.0}
 
     embedder = get_embedder()
@@ -78,7 +78,11 @@ def evaluate_semantic_score(
     metrics = {
         "similarity": normalized_sim,
         "coverage": coverage_score,
-        "completeness": completeness_score
+        "completeness": completeness_score,
+        "relevance": normalized_sim,
+        "clarity": completeness_score,
+        "keywordCoverage": coverage_score,
+        "plagiarismSimilarity": None
     }
     
     return final_score, metrics

@@ -49,7 +49,7 @@ exports.startEvaluationSession = async (req, res, next) => {
         // Use an absolute URL if AI service is hosted elsewhere
         const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://localhost:8000';
 
-        const backendPort = process.env.PORT || 5001;
+        const backendPort = process.env.PORT || 5000;
         const fallbackWebhookUrl = `http://localhost:${backendPort}`;
 
         axios.post(`${aiServiceUrl}/eval/batch-summary`, {
@@ -109,9 +109,12 @@ exports.handleAIWebhook = async (req, res, next) => {
             savedResult = await StudentEvaluation.create({
                 sessionId: session._id,
                 studentName: latestResult.studentName || 'Unknown',
-                rollNumber: latestResult.rollNumber || 'UNKNOWN',
+                rollNumber: latestResult.rollNumber || latestResult.rollNo || 'UNKNOWN',
+                rollNo: latestResult.rollNo || latestResult.rollNumber || 'UNKNOWN',
                 summaryText: latestResult.summaryText || '',
                 score: latestResult.score,
+                metrics: latestResult.metrics || {},
+                aiEvaluation: latestResult.aiEvaluation || {},
                 feedback: latestResult.feedback,
                 evaluationStatus: latestResult.success ? 'COMPLETED' : 'FAILED',
                 errorMessage: latestResult.errorMessage || ''
@@ -130,9 +133,16 @@ exports.handleAIWebhook = async (req, res, next) => {
                 processedStudents: session.processedStudents,
                 totalStudents: session.totalStudents,
                 recentResult: savedResult ? {
+                    _id: savedResult._id,
                     studentName: savedResult.studentName,
                     rollNumber: savedResult.rollNumber,
-                    score: savedResult.score
+                    rollNo: savedResult.rollNo,
+                    score: savedResult.score,
+                    metrics: savedResult.metrics,
+                    aiEvaluation: savedResult.aiEvaluation,
+                    feedback: savedResult.feedback,
+                    evaluationStatus: savedResult.evaluationStatus,
+                    errorMessage: savedResult.errorMessage
                 } : null
             });
 

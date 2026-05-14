@@ -1,7 +1,8 @@
 import axios from 'axios';
+import { API_BASE } from '../config/api';
 
 // Matches the backend route mounted in server.js
-const API_URL = 'http://localhost:5001/api/evaluations';
+const API_URL = `${API_BASE}/api/evaluations`;
 
 /**
  * Initiates the evaluation async job.

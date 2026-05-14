@@ -943,6 +943,13 @@ const ProfessorDashboard = () => {
               <span>Student Evaluations</span>
             </button>
             <button 
+              className={`prof-nav-btn ${activeTab === 'batch_evals' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('batch_evals')}
+            >
+              <Book size={18} />
+              <span>AI Batch Evaluator</span>
+            </button>
+            <button 
               className={`prof-nav-btn ${activeTab === 'courses' ? 'is-active' : ''}`}
               onClick={() => {
                 setActiveTab('courses');
