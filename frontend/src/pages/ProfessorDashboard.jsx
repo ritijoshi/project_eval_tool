@@ -12,6 +12,7 @@ import CourseSwitcher from '../components/CourseSwitcher';
 import { useActiveCourse } from '../context/ActiveCourseContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import SummaryEvaluation from './SummaryEvaluation';
+import CourseGroupChat from '../components/CourseGroupChat';
 
 const ProfessorDashboard = () => {
   const navigate = useNavigate();
@@ -959,6 +960,13 @@ const ProfessorDashboard = () => {
               <Book size={18} />
               <span>Course Management</span>
             </button>
+            <button 
+              className={`prof-nav-btn ${activeTab === 'course-chat' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('course-chat')}
+            >
+              <MessagesSquare size={18} />
+              <span>Course Chat</span>
+            </button>
             <button
               className={`prof-nav-btn ${activeTab === 'announcements' ? 'is-active' : ''}`}
               onClick={() => setActiveTab('announcements')}
@@ -1104,6 +1112,14 @@ const ProfessorDashboard = () => {
           >
             <Book size={16} />
             Course Management
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'course-chat' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('course-chat')}
+          >
+            <MessagesSquare size={16} />
+            Course Chat
           </button>
           <button
             type="button"
@@ -1444,6 +1460,8 @@ const ProfessorDashboard = () => {
           )
         ) : activeTab === 'materials' ? (
           <ProfessorMaterialsUploader />
+        ) : activeTab === 'course-chat' ? (
+          <CourseGroupChat courseId={activeCourseId} />
         ) : activeTab === 'announcements' ? (
           <AnnouncementsPanel role="professor" activeCourseId={activeCourseId} activeCourse={activeCourse} />
         ) : activeTab === 'rubrics' ? (

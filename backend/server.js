@@ -109,6 +109,7 @@ app.use('/api/user', require('./routes/user'));
 app.use('/api/announcements', require('./routes/announcements'));
 app.use('/api/evaluations', require('./routes/evaluation'));
 app.use('/api/leaderboard', require('./routes/leaderboard'));
+app.use('/api/group-chat', require('./routes/groupChat'));
 app.use('/api', require('./routes/tests'));
 app.use('/api', require('./routes/progress'));
 

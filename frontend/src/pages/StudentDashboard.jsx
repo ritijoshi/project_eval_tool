@@ -27,6 +27,7 @@ import FeedbackViewer from '../components/FeedbackViewer';
 import AnnouncementsPanel from '../components/AnnouncementsPanel';
 import { API_BASE } from '../config/api';
 import CourseSwitcher from '../components/CourseSwitcher';
+import CourseGroupChat from '../components/CourseGroupChat';
 import { useActiveCourse } from '../context/ActiveCourseContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 
@@ -949,6 +950,14 @@ const StudentDashboard = () => {
             <span className="font-medium">Course Modules</span>
           </button>
           <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'course-chat' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
+            style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
+            onClick={() => setActiveTab('course-chat')}
+          >
+            <MessageSquare size={20} />
+            <span className="font-medium">Course Chat</span>
+          </button>
+          <button
             className={`flex items-center gap-4 w-full ${activeTab === 'announcements' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => setActiveTab('announcements')}
@@ -1029,6 +1038,11 @@ const StudentDashboard = () => {
             </button>
           </div>
         </div>
+
+        {/* COURSE CHAT TAB */}
+        {activeTab === 'course-chat' && (
+          <CourseGroupChat courseId={activeCourseId} />
+        )}
 
         {/* DASHBOARD TAB */}
         {activeTab === 'dashboard' && (

@@ -274,6 +274,49 @@ const initializeSocket = (server) => {
       socket.emit('active-users', { users, courseKey });
     });
 
+    // ===== COURSE GROUP CHAT =====
+    socket.on('join-group-chat', (courseId) => {
+      socket.join(`course-group:${courseId}`);
+      console.log(`User ${socket.userId} joined group chat ${courseId}`);
+    });
+
+    socket.on('leave-group-chat', (courseId) => {
+      socket.leave(`course-group:${courseId}`);
+    });
+
+    socket.on('send-group-message', async (data) => {
+      try {
+        const { courseId, text, messageType, attachments } = data;
+        const CourseGroupChat = require('../models/CourseGroupChat');
+        
+        const newMessage = await CourseGroupChat.create({
+          course: courseId,
+          sender: socket.userId,
+          messageType: messageType || 'text',
+          text,
+          attachments: attachments || []
+        });
+
+        const populatedMessage = await CourseGroupChat.findById(newMessage._id)
+          .populate('sender', 'name email role profilePicture')
+          .lean();
+
+        // Broadcast to everyone in the room including sender
+        io.to(`course-group:${courseId}`).emit('new-group-message', populatedMessage);
+      } catch (err) {
+        console.error('Group chat error:', err);
+        socket.emit('error', { message: 'Failed to send group message' });
+      }
+    });
+
+    socket.on('group-typing', (courseId) => {
+      socket.broadcast.to(`course-group:${courseId}`).emit('group-typing', { userId: socket.userId });
+    });
+
+    socket.on('group-stop-typing', (courseId) => {
+      socket.broadcast.to(`course-group:${courseId}`).emit('group-stop-typing', { userId: socket.userId });
+    });
+
     // Disconnect handler
     socket.on('disconnect', () => {
       console.log(`User ${socket.userId} disconnected`);
