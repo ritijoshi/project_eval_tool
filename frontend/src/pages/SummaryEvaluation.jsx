@@ -3,6 +3,7 @@ import UploadPanel from '../components/SummaryEvaluation/UploadPanel';
 import ProgressTracker from '../components/SummaryEvaluation/ProgressTracker';
 import EvaluationStats from '../components/SummaryEvaluation/EvaluationStats';
 import ResultsTable from '../components/SummaryEvaluation/ResultsTable';
+import Leaderboard from '../components/SummaryEvaluation/Leaderboard';
 import { useEvaluationSocket } from '../hooks/useEvaluationSocket';
 import { startEvaluation, getEvaluationResults } from '../services/evaluationApi';
 import './SummaryEvaluation.css';
@@ -13,6 +14,7 @@ export default function SummaryEvaluation() {
     const [sessionMetadata, setSessionMetadata] = useState(null);
     const [globalError, setGlobalError] = useState(null);
     const [isFetchingFinal, setIsFetchingFinal] = useState(false);
+    const [viewMode, setViewMode] = useState('table'); // 'table' | 'leaderboard'
 
     // 1. Transient Socket Telemetry hook
     const socket = useEvaluationSocket(sessionId);
@@ -50,6 +52,13 @@ export default function SummaryEvaluation() {
         fetchFinalData();
     }, [socket.isCompleted, sessionId]);
 
+    // Auto-switch to leaderboard tab when evaluation completes
+    useEffect(() => {
+        if (socket.isCompleted) {
+            setViewMode('leaderboard');
+        }
+    }, [socket.isCompleted]);
+
     // Dynamic array for Stats: Combine the REST backup with Transient websocket rows
     const displayEvaluations = socket.isCompleted && evaluations.length > 0
         ? evaluations
@@ -59,6 +68,7 @@ export default function SummaryEvaluation() {
         setGlobalError(null);
         setEvaluations([]);
         setSessionMetadata({ topic: lectureTopic });
+        setViewMode('table');
 
         try {
             // Hardcoded strictly to 'all' as requested since it's a general feature
@@ -77,6 +87,7 @@ export default function SummaryEvaluation() {
         setSessionId(null);
         setEvaluations([]);
         setGlobalError(null);
+        setViewMode('table');
     };
 
     return (
@@ -84,7 +95,7 @@ export default function SummaryEvaluation() {
             <div className="header-row">
                 <div>
                     <h2>AI Batch Summary Evaluator</h2>
-                    <p className="subtitle">Upload student summaries & lecture transcripts for automated AI grading.</p>
+                    <p className="subtitle">Upload student summaries &amp; lecture transcripts for automated AI grading.</p>
                 </div>
                 {sessionId && (
                     <button className="btn-secondary danger-hover" onClick={handleClearSession}>
@@ -119,11 +130,35 @@ export default function SummaryEvaluation() {
                                 status={socket.status}
                             />
 
-                            <ResultsTable
-                                evaluations={displayEvaluations}
-                                status={socket.status}
-                                sessionMetadata={sessionMetadata}
-                            />
+                            {/* View mode toggle */}
+                            <div className="eval-view-toggle">
+                                <button
+                                    className={`eval-toggle-btn ${viewMode === 'table' ? 'active' : ''}`}
+                                    onClick={() => setViewMode('table')}
+                                >
+                                    📋 Results Table
+                                </button>
+                                <button
+                                    className={`eval-toggle-btn ${viewMode === 'leaderboard' ? 'active' : ''}`}
+                                    onClick={() => setViewMode('leaderboard')}
+                                >
+                                    🏆 Leaderboard
+                                </button>
+                            </div>
+
+                            {viewMode === 'table' ? (
+                                <ResultsTable
+                                    evaluations={displayEvaluations}
+                                    status={socket.status}
+                                    sessionMetadata={sessionMetadata}
+                                />
+                            ) : (
+                                <Leaderboard
+                                    sessionId={sessionId}
+                                    evaluations={displayEvaluations}
+                                    status={socket.status}
+                                />
+                            )}
                         </>
                     )}
                 </div>

@@ -108,6 +108,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/announcements', require('./routes/announcements'));
 app.use('/api/evaluations', require('./routes/evaluation'));
+app.use('/api/leaderboard', require('./routes/leaderboard'));
 app.use('/api', require('./routes/tests'));
 app.use('/api', require('./routes/progress'));
 

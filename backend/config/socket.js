@@ -70,6 +70,19 @@ const initializeSocket = (server) => {
       console.log(`Socket ${socket.id} left room ${room}`);
     });
 
+    // ===== LEADERBOARD ROOMS =====
+    socket.on('join_leaderboard_room', ({ sessionId }) => {
+      const room = `leaderboard_session_${sessionId}`;
+      socket.join(room);
+      console.log(`Socket ${socket.id} joined leaderboard room ${room}`);
+    });
+
+    socket.on('leave_leaderboard_room', ({ sessionId }) => {
+      const room = `leaderboard_session_${sessionId}`;
+      socket.leave(room);
+      console.log(`Socket ${socket.id} left leaderboard room ${room}`);
+    });
+
 
     // ===== REAL-TIME CHAT =====
     socket.on('chat-message', async (data) => {

@@ -3,6 +3,7 @@ const StudentEvaluation = require('../models/StudentEvaluation');
 const Course = require('../models/Course');
 const axios = require('axios');
 const path = require('path');
+const { buildRankedLeaderboard } = require('./leaderboardController');
 
 // 1. Start Evaluation Session
 exports.startEvaluationSession = async (req, res, next) => {
@@ -150,13 +151,29 @@ exports.handleAIWebhook = async (req, res, next) => {
                 const evaluations = await StudentEvaluation.find({ sessionId }).sort({ createdAt: -1 });
 
                 console.log('FINAL EVALUATIONS COUNT:', evaluations.length);
-                console.log('FINAL EVALUATIONS:', evaluations);
 
                 io.to(room).emit('evaluation_completed', {
                     sessionId,
                     status,
                     evaluations
                 });
+
+                // Compute and broadcast ranked leaderboard on completion
+                if (status === 'COMPLETED') {
+                    try {
+                        const { ranked, total } = buildRankedLeaderboard(evaluations);
+                        const leaderboardRoom = `leaderboard_session_${sessionId}`;
+                        io.to(leaderboardRoom).emit('leaderboard_update', {
+                            sessionId,
+                            leaderboard: ranked,
+                            totalEvaluated: total,
+                            triggeredBy: 'evaluation_completed',
+                        });
+                        console.log(`Leaderboard emitted: ${total} ranked students for session ${sessionId}`);
+                    } catch (lbErr) {
+                        console.error('Failed to compute/emit leaderboard:', lbErr.message);
+                    }
+                }
             }
         }
 
