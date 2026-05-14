@@ -19,7 +19,10 @@ connectDB();
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = getAllowedOrigins();
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:5001'
+]
 
 // Initialize WebSocket
 const io = initializeSocket(server);
@@ -104,6 +107,7 @@ app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/announcements', require('./routes/announcements'));
+app.use('/api/evaluations', require('./routes/evaluation'));
 app.use('/api', require('./routes/tests'));
 app.use('/api', require('./routes/progress'));
 

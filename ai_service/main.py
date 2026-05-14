@@ -24,6 +24,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+try:
+    from summary_evaluation.routes import eval_routes
+    app.include_router(eval_routes.router)
+except ImportError as e:
+    print(f"Failed to load summary_evaluation router: {e}")
+
+
 
 @app.get("/health")
 async def health_check():
