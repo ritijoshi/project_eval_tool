@@ -11,6 +11,7 @@ import { API_BASE } from '../config/api';
 import CourseSwitcher from '../components/CourseSwitcher';
 import { useActiveCourse } from '../context/ActiveCourseContext';
 import { useWebSocket } from '../hooks/useWebSocket';
+import SummaryEvaluation from './SummaryEvaluation';
 
 const ProfessorDashboard = () => {
   const navigate = useNavigate();
@@ -1077,6 +1078,14 @@ const ProfessorDashboard = () => {
           >
             <BarChart3 size={16} />
             Student Evaluations
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'batch_evals' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('batch_evals')}
+          >
+            <Book size={16} />
+            AI Batch Evaluator
           </button>
           <button
             type="button"
@@ -2636,6 +2645,10 @@ const ProfessorDashboard = () => {
                 <EvaluationReviewer feedbackId={selectedEvaluation} />
               </div>
             )}
+          </div>
+        ) : activeTab === 'batch_evals' ? (
+          <div>
+            <SummaryEvaluation />
           </div>
         ) : activeTab === 'guide' ? (
           <div className="prof-guide-section">

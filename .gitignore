@@ -25,3 +25,6 @@ ai_service/temp_eval_upload/
 .idea/
 .DS_Store
 Thumbs.db
+
+artifacts/
+backend/uploads/temp/

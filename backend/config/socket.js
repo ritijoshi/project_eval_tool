@@ -53,6 +53,24 @@ const initializeSocket = (server) => {
     socket.join(`user:${socket.userId}`);
     socket.join(`role:${socket.userRole}`);
 
+    // ===== AI BATCH EVALUATION ROOMS =====
+    socket.on('join_evaluation_room', ({ sessionId }) => {
+      const room = `evaluation_session_${sessionId}`;
+
+      socket.join(room);
+
+      console.log(`Socket ${socket.id} joined room ${room}`);
+    });
+
+    socket.on('leave_evaluation_room', ({ sessionId }) => {
+      const room = `evaluation_session_${sessionId}`;
+
+      socket.leave(room);
+
+      console.log(`Socket ${socket.id} left room ${room}`);
+    });
+
+
     // ===== REAL-TIME CHAT =====
     socket.on('chat-message', async (data) => {
       try {
