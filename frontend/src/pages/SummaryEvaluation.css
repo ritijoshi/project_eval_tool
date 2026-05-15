@@ -1,0 +1,89 @@
+/* Inheriting dashboard glass/dark variables natively available in index.css */
+
+.summary-evaluation-container {
+    animation: fadeIn 0.4s ease forwards;
+    padding-bottom: 2rem;
+}
+
+.header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.header-row h2 {
+    font-size: 1.8rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+}
+
+.subtitle {
+    color: var(--muted);
+    font-size: 0.95rem;
+}
+
+.pipeline-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.global-error-boundary {
+    padding: 1rem 1.5rem;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid var(--error-color, #ef4444);
+    border-radius: 8px;
+    color: var(--error-color, #ef4444);
+    margin-bottom: 1.5rem;
+    font-weight: 600;
+}
+
+.danger-hover:hover {
+    background: rgba(239, 68, 68, 0.15) !important;
+    border-color: rgba(239, 68, 68, 0.4) !important;
+    color: #ef4444 !important;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── View mode toggle (Results Table / Leaderboard) ── */
+.eval-view-toggle {
+    display: flex;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 5px;
+    width: fit-content;
+}
+
+.eval-toggle-btn {
+    padding: 9px 20px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--muted, #8a8fa8);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.eval-toggle-btn:hover:not(.active) {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary, #e2e8f0);
+}
+
+.eval-toggle-btn.active {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.2));
+    color: var(--text-primary, #e2e8f0);
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
+    font-weight: 600;
+}

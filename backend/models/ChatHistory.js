@@ -7,10 +7,29 @@ const chatMessageSchema = new mongoose.Schema(
             enum: ['user', 'agent'],
             required: true,
         },
+        type: {
+            type: String,
+            enum: ['text', 'voice', 'image', 'document'],
+            default: 'text',
+        },
         text: {
             type: String,
-            required: true,
             trim: true,
+            default: '',
+        },
+        content: {
+            type: String,
+            trim: true,
+            default: '',
+        },
+        fileUrl: {
+            type: String,
+            trim: true,
+            default: '',
+        },
+        metadata: {
+            type: mongoose.Schema.Types.Mixed,
+            default: {},
         },
         createdAt: {
             type: Date,

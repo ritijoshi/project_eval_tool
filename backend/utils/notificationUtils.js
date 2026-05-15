@@ -240,7 +240,7 @@ exports.notifyMaterialUploaded = async (io, courseKey, materialName, studentIds)
  * @param {String} message - Announcement message
  * @param {String} priority - Priority level
  */
-exports.broadcastToProf essors = async (io, title, message, priority = 'medium') => {
+exports.broadcastToProfessors = async (io, title, message, priority = 'medium') => {
   try {
     // Real-time broadcast
     if (io) {

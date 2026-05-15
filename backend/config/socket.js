@@ -24,8 +24,12 @@ const initializeSocket = (server) => {
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      socket.userId = decoded.id;
+      socket.userId = decoded.userId || decoded.id;
       socket.userRole = decoded.role;
+
+      if (!socket.userId) {
+        return next(new Error('Invalid token payload'));
+      }
       next();
     } catch (err) {
       next(new Error('Invalid token'));
@@ -48,6 +52,37 @@ const initializeSocket = (server) => {
     // Join user's personal room
     socket.join(`user:${socket.userId}`);
     socket.join(`role:${socket.userRole}`);
+
+    // ===== AI BATCH EVALUATION ROOMS =====
+    socket.on('join_evaluation_room', ({ sessionId }) => {
+      const room = `evaluation_session_${sessionId}`;
+
+      socket.join(room);
+
+      console.log(`Socket ${socket.id} joined room ${room}`);
+    });
+
+    socket.on('leave_evaluation_room', ({ sessionId }) => {
+      const room = `evaluation_session_${sessionId}`;
+
+      socket.leave(room);
+
+      console.log(`Socket ${socket.id} left room ${room}`);
+    });
+
+    // ===== LEADERBOARD ROOMS =====
+    socket.on('join_leaderboard_room', ({ sessionId }) => {
+      const room = `leaderboard_session_${sessionId}`;
+      socket.join(room);
+      console.log(`Socket ${socket.id} joined leaderboard room ${room}`);
+    });
+
+    socket.on('leave_leaderboard_room', ({ sessionId }) => {
+      const room = `leaderboard_session_${sessionId}`;
+      socket.leave(room);
+      console.log(`Socket ${socket.id} left leaderboard room ${room}`);
+    });
+
 
     // ===== REAL-TIME CHAT =====
     socket.on('chat-message', async (data) => {
@@ -237,6 +272,49 @@ const initializeSocket = (server) => {
     socket.on('request-active-users', (courseKey) => {
       const users = Array.from(activeUsers.entries()).map(([userId]) => userId);
       socket.emit('active-users', { users, courseKey });
+    });
+
+    // ===== COURSE GROUP CHAT =====
+    socket.on('join-group-chat', (courseId) => {
+      socket.join(`course-group:${courseId}`);
+      console.log(`User ${socket.userId} joined group chat ${courseId}`);
+    });
+
+    socket.on('leave-group-chat', (courseId) => {
+      socket.leave(`course-group:${courseId}`);
+    });
+
+    socket.on('send-group-message', async (data) => {
+      try {
+        const { courseId, text, messageType, attachments } = data;
+        const CourseGroupChat = require('../models/CourseGroupChat');
+        
+        const newMessage = await CourseGroupChat.create({
+          course: courseId,
+          sender: socket.userId,
+          messageType: messageType || 'text',
+          text,
+          attachments: attachments || []
+        });
+
+        const populatedMessage = await CourseGroupChat.findById(newMessage._id)
+          .populate('sender', 'name email role profilePicture')
+          .lean();
+
+        // Broadcast to everyone in the room including sender
+        io.to(`course-group:${courseId}`).emit('new-group-message', populatedMessage);
+      } catch (err) {
+        console.error('Group chat error:', err);
+        socket.emit('error', { message: 'Failed to send group message' });
+      }
+    });
+
+    socket.on('group-typing', (courseId) => {
+      socket.broadcast.to(`course-group:${courseId}`).emit('group-typing', { userId: socket.userId });
+    });
+
+    socket.on('group-stop-typing', (courseId) => {
+      socket.broadcast.to(`course-group:${courseId}`).emit('group-stop-typing', { userId: socket.userId });
     });
 
     // Disconnect handler

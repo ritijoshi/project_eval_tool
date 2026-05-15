@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, MessageSquare, AlertCircle, CheckCircle, Clock 
 import axios from 'axios';
 import { API_BASE } from '../config/api';
 
-const FeedbackViewer = ({ evaluationId, courseKey, onClose = null }) => {
+const FeedbackViewer = ({ evaluationId, onClose = null }) => {
   const [feedback, setFeedback] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -92,7 +92,7 @@ const FeedbackViewer = ({ evaluationId, courseKey, onClose = null }) => {
       awaiting_response: { color: '#FFC107', icon: MessageSquare, label: 'Awaiting Response' },
       resolved: { color: '#34C759', icon: CheckCircle, label: 'Resolved' },
     };
-    const statusInfo = statusMap[feedback.status] || statusMap.pending;
+    const statusInfo = statusMap[status] || statusMap.pending;
     const Icon = statusInfo.icon;
     return (
       <div className="feedback-status-badge" style={{ borderColor: statusInfo.color }}>

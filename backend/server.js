@@ -9,6 +9,8 @@ const http = require('http');
 const { requestLogger } = require('./middleware/requestLogger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { getAllowedOrigins } = require('./config/services');
+const path = require('path');
+const { startAnnouncementScheduler } = require('./jobs/announcementScheduler');
 
 dotenv.config();
 
@@ -17,7 +19,10 @@ connectDB();
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = getAllowedOrigins();
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:5001'
+]
 
 // Initialize WebSocket
 const io = initializeSocket(server);
@@ -37,6 +42,13 @@ app.use(
     })
 );
 app.use(express.json({ limit: '2mb' }));
+// Allow the frontend (different origin/port) to load uploaded attachments (audio/image/docs).
+// Helmet sets Cross-Origin-Resource-Policy: same-origin by default, which will block these.
+app.use('/uploads', (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+});
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(requestLogger);
 
 const globalLimiter = rateLimit({
@@ -94,11 +106,20 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/assignments', require('./routes/assignments'));
+app.use('/api/user', require('./routes/user'));
+app.use('/api/announcements', require('./routes/announcements'));
+app.use('/api/evaluations', require('./routes/evaluation'));
+app.use('/api/leaderboard', require('./routes/leaderboard'));
+app.use('/api/group-chat', require('./routes/groupChat'));
+app.use('/api', require('./routes/tests'));
+app.use('/api', require('./routes/progress'));
 
 app.use(notFoundHandler);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
+
+startAnnouncementScheduler(app, { intervalMs: process.env.ANNOUNCEMENT_SCHEDULER_MS });
 
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

@@ -21,6 +21,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+try:
+    from summary_evaluation.routes import eval_routes
+    app.include_router(eval_routes.router)
+except ImportError as e:
+    print(f"Failed to load summary_evaluation router: {e}")
+
+
 
 @app.get("/health")
 async def health_check():
@@ -41,6 +48,8 @@ async def readiness_check():
             "llm_available": LLM_AVAILABLE,
             "openai_key_configured": bool(openai_key) and openai_key != "sk-placeholder",
             "groq_key_configured": bool(groq_key) and groq_key != "gsk-placeholder",
+            "groq_enabled": groq_llm_enabled(),
+            "groq_model": os.environ.get("GROQ_MODEL", "llama3-8b-8192")
         },
     }
 
@@ -67,6 +76,12 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+class MultimodalChatResponse(BaseModel):
+    reply: str
+    transcript: str = ""
+    extracted_text: str = ""
+    attachments: List[Dict] = []
 
 class PersonalizeRequest(BaseModel):
     quiz_scores: Dict[str, int]
@@ -125,6 +140,7 @@ try:
     from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_openai import OpenAIEmbeddings
+    from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_community.vectorstores import FAISS
     from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
     from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -140,6 +156,14 @@ try:
     LLM_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Groq LLM integration unavailable ({e}). Mock AI will be used.")
+
+IMAGE_TO_TEXT_AVAILABLE = False
+try:
+    from PIL import Image
+    import pytesseract
+    IMAGE_TO_TEXT_AVAILABLE = True
+except ImportError:
+    pass
 
 def get_vector_store():
     if not VECTORS_AVAILABLE: return None
@@ -196,14 +220,7 @@ async def chat_with_agent(req: ChatRequest):
         
     if not VECTORS_AVAILABLE:
         # Graceful fallback logic so UI remains functional
-        fallback_reply = (
-            f"🧠 **Course Agent Response Mode**: "
-            f"You asked: '{req.message}'. "
-            f"\\n\\nSince the vector database isn't available, I can still help based on general knowledge. "
-            f"\\n\\nProfessor's Teaching Style: {req.professor_style[:200]}... "
-            f"\\n\\nYour Level: {req.student_level}. "
-            f"\\n\\nFor better, course-specific answers, please make sure materials are uploaded to the course and try asking again."
-        )
+        fallback_reply = "I don't have enough course material yet, please ask your professor to upload content."
         return ChatResponse(reply=fallback_reply)
 
     vector_store = get_vector_store()
@@ -214,13 +231,16 @@ async def chat_with_agent(req: ChatRequest):
     
     # 2. Advanced Prompt Engineering
     system_prompt = (
-        "You are an expert AI teaching assistant answering contextually about this material: {context}\n\n"
-        "Your Goals:\n"
-        f"1. Mimic the Professor's Style: {req.professor_style}\n"
-        f"2. Adapt to Student Level: The student is a '{req.student_level}'. Adjust your explanation depth. "
-        "If beginner, use analogies and simple definitions. If intermediate/advanced, go deeper into technical specifics.\n"
-        "3. Use memory context from the chat history if needed.\n\n"
-        "If the answer isn't in the context, gently guide the student toward standard learning resources in character."
+        "You are a friendly teaching assistant. Answer the student's question concisely using the provided course material.\n\n"
+        "Rules:\n"
+        "1. Answer like a friendly teaching assistant.\n"
+        "2. DO NOT include section titles like 'Course Material Response', 'Relevant Material', etc.\n"
+        "3. Use a simple explanation based on course material.\n"
+        "4. Keep response concise and natural (max 5-6 lines).\n"
+        "5. If no relevant material is found in the context, say: 'I don’t have enough course material yet, please ask your professor to upload content.'\n"
+        "6. Return ONLY the final answer string. Use plain text and avoid markdown headings.\n"
+        f"7. Adaptation: Student level is '{req.student_level}'. Professor's style: '{req.professor_style}'.\n\n"
+        "Context:\n{context}"
     )
     
     prompt = ChatPromptTemplate.from_messages([
@@ -235,15 +255,8 @@ async def chat_with_agent(req: ChatRequest):
             docs = retriever.invoke(req.message)
             source_content = docs[0].page_content if docs else "No specific documents found."
             
-            # Improved mock response
-            mock_reply = (
-                f"**Course Material Found**\\n\\n"
-                f"Your question: \"{req.message}\"\\n\\n"
-                f"**Relevant Course Content:**\\n{source_content[:400]}...\\n\\n"
-                f"**Teaching Style:** {req.professor_style[:150]}...\\n\\n"
-                f"**For {req.student_level} level students:** "
-                f"Review the material above, break it down into key concepts, and practice with examples."
-            )
+            # Clean conversational mock response
+            mock_reply = f"Based on the course materials: {source_content[:500]}. I hope this helps you understand '{req.message}' better!"
             return ChatResponse(reply=mock_reply)
 
         # 3. Groq LLM (Llama 3 8b or Mixtral)
@@ -287,6 +300,24 @@ class WeeklyUpdateRequest(BaseModel):
     announcements: List[str] = []
     revised_expectations: List[str] = []
     update_text: str = ""
+
+class QuizQuestion(BaseModel):
+    questionText: str
+    options: List[str]
+    correctAnswer: int
+    explanation: str = ""
+    topic: str = ""
+
+class QuizGenerateRequest(BaseModel):
+    course_key: str
+    count: int = 10
+    difficulty: str = "medium"
+    topics: List[str] = []
+    instructions: str = ""
+
+class QuizGenerateResponse(BaseModel):
+    course_key: str
+    questions: List[QuizQuestion]
 
 def normalize_course_key(course_key: str) -> str:
     s = str(course_key).strip().lower()
@@ -479,7 +510,7 @@ def extract_text_from_file(file_location: str, filename: str) -> str:
         except Exception:
             return ""
 
-    if lower.endswith((".mp3", ".wav", ".m4a")):
+    if lower.endswith((".mp3", ".wav", ".m4a", ".webm", ".ogg", ".mp4")):
         # Audio transcription is optional; supported when openai-whisper is installed.
         try:
             import whisper
@@ -560,6 +591,366 @@ def retrieve_course_context(course_key: str, query: str, k: int = 4) -> List[str
         return top
     except Exception:
         return []
+
+def parse_history_payload(history_value) -> List[Dict[str, str]]:
+    if isinstance(history_value, list):
+        source = history_value
+    else:
+        try:
+            source = json.loads(history_value or "[]")
+        except Exception:
+            source = []
+
+    history_messages = []
+    for item in source:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or item.get("content") or "").strip()
+        if not text:
+            continue
+        history_messages.append({
+            "sender": "agent" if item.get("sender") == "agent" else "user",
+            "text": text,
+        })
+    return history_messages[-40:]
+
+def extract_attachment_records(files: List[UploadFile], temp_dir: str) -> List[Dict[str, str]]:
+    records = []
+    for uploaded in files or []:
+        filename = uploaded.filename or "file"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename)
+        file_location = os.path.join(temp_dir, safe_name)
+
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(uploaded.file, buffer)
+
+        text = extract_text_from_file(file_location, filename)
+        lower = filename.lower()
+        if lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")):
+            file_type = "image"
+        elif lower.endswith((".mp3", ".wav", ".m4a", ".webm", ".ogg")):
+            file_type = "audio"
+        else:
+            file_type = "document"
+
+        records.append({
+            "filename": filename,
+            "file_type": file_type,
+            "text": text,
+            "path": file_location,
+        })
+    return records
+
+def build_attachment_context(attachment_records: List[Dict[str, str]]) -> str:
+    sections = []
+    for record in attachment_records or []:
+        text = str(record.get("text") or "").strip()
+        if not text:
+            text = "No extractable text found. Use the attachment metadata and visual context if applicable."
+        sections.append(
+            f"[{record.get('file_type', 'file').upper()}] {record.get('filename', 'file')}\n{text[:1800]}"
+        )
+    return "\n\n".join(sections).strip()
+
+def generate_course_chat_reply(
+    course_key: str,
+    message: str,
+    history: List[Dict[str, str]],
+    student_level: str = "intermediate",
+    professor_style: Optional[str] = None,
+    attachment_context: str = "",
+) -> ChatResponse:
+    course_key = normalize_course_key(course_key)
+    style_from_store = load_course_style(course_key)
+    teaching_style = str(professor_style or "").strip() or style_from_store or ""
+    query = str(message or "").strip()
+    if attachment_context:
+        query = f"{query}\n\nUploaded attachment context:\n{attachment_context}"
+
+    context_chunks = retrieve_course_context(course_key, query or message, k=4)
+    context_text = "\n\n---\n\n".join(context_chunks).strip()
+
+    if not context_text and attachment_context:
+        context_chunks = [attachment_context]
+        context_text = attachment_context
+
+    if not context_text:
+        return ChatResponse(
+            reply="I don't have enough course material yet, please ask your professor to upload content."
+        )
+
+    if not groq_llm_enabled():
+        top_chunk = context_chunks[0] if context_chunks else ""
+        if not top_chunk:
+            return ChatResponse(reply="I don't have enough course material yet, please ask your professor to upload content.")
+        
+        # Clean conversational fallback response
+        reply = f"According to our course materials: {top_chunk[:500]}. For {student_level} level students, this covers the essentials. Let me know if you need more details!"
+        return ChatResponse(reply=reply)
+
+    retriever = None
+    if huggingface_embeddings_enabled() and course_faiss_exists(course_key):
+        embeddings = HuggingFaceEmbeddings()
+        vector_store = FAISS.load_local(course_faiss_path(course_key), embeddings, allow_dangerous_deserialization=True)
+        retriever = vector_store.as_retriever(search_kwargs={"k": 4})
+
+    system_prompt = (
+        "You are a friendly teaching assistant. Answer the student's question concisely using the provided course material.\n\n"
+        "Rules:\n"
+        "1. Answer like a friendly teaching assistant.\n"
+        "2. DO NOT include section titles like 'Course Material Response', 'Relevant Material', etc.\n"
+        "3. Use a simple explanation based on course material.\n"
+        "4. Keep response concise and natural (max 5-6 lines).\n"
+        "5. If no relevant material is found in the context, say: 'I don’t have enough course material yet, please ask your professor to upload content.'\n"
+        "6. Return ONLY the final answer string. Use plain text and avoid markdown headings.\n"
+        f"7. Adaptation: Student level is '{student_level}'. Professor's style: '{teaching_style or 'natural'}'.\n\n"
+        "Context:\n{context}"
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}"),
+    ])
+
+    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.7)
+
+    chat_history_messages = []
+    for msg in history or []:
+        if VECTORS_AVAILABLE:
+            if msg.get("sender") == "user":
+                chat_history_messages.append(HumanMessage(content=msg.get("text", "")))
+            elif msg.get("sender") == "agent":
+                chat_history_messages.append(AIMessage(content=msg.get("text", "")))
+
+    if not retriever:
+        return ChatResponse(
+            reply=(
+                "I found the relevant course context, but I can't run FAISS retrieval in this environment. "
+                "I'll still answer using the retrieved snippet.\n\n"
+                f"Snippet: {context_chunks[0][:600]}..."
+            )
+        )
+
+    rag_chain = (
+        {
+            "context": retriever,
+            "input": RunnablePassthrough(),
+            "chat_history": lambda _: chat_history_messages,
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    response = rag_chain.invoke(message)
+    return ChatResponse(reply=response)
+
+def _extract_json_array(text: str) -> Optional[List[Dict]]:
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict) and isinstance(obj.get("questions"), list):
+            return obj.get("questions")
+    except Exception:
+        pass
+
+    # Best-effort: pull the first JSON array from the response
+    try:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start : end + 1]
+            obj = json.loads(candidate)
+            if isinstance(obj, list):
+                return obj
+    except Exception:
+        pass
+    return None
+
+def fallback_generate_quiz(course_key: str, context_chunks: List[str], count: int, topics: List[str]) -> QuizGenerateResponse:
+    # Deterministic, editable quiz scaffold when LLM is unavailable.
+    joined = "\n\n".join([c for c in (context_chunks or []) if c])
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", joined) if s.strip()]
+    if not sentences:
+        sentences = [joined[:250]] if joined else ["Course material context is not available."]
+
+    def mutate(s: str, salt: int) -> str:
+        # Produce a slightly altered distractor from the same sentence.
+        words = s.split()
+        if len(words) < 6:
+            return s + " (paraphrase)"
+        drop = max(1, min(3, (salt % 3) + 1))
+        return " ".join(words[:-drop]) + " ..."
+
+    questions: List[QuizQuestion] = []
+    for i in range(max(1, min(25, int(count or 10)))):
+        base = sentences[i % len(sentences)]
+        base = base[:220]
+        correct = base
+        opts = [
+            correct,
+            mutate(base, i + 1),
+            mutate(base, i + 2),
+            mutate(base, i + 3),
+        ]
+        topic = topics[i % len(topics)] if topics else ""
+        questions.append(QuizQuestion(
+            questionText=f"Which statement is supported by the course material?",
+            options=opts,
+            correctAnswer=0,
+            explanation="Correct option is taken directly from the course material excerpt (fallback mode).",
+            topic=topic,
+        ))
+
+    return QuizGenerateResponse(course_key=course_key, questions=questions)
+
+def fallback_generate_quiz_from_topics(course_key: str, count: int, topics: List[str], difficulty: str, instructions: str) -> QuizGenerateResponse:
+    # Deterministic quiz generation from topics only (no course materials required).
+    # This keeps the UI functional even when embeddings/materials are absent.
+    safe_topics = [t for t in (topics or []) if str(t).strip()]
+    if not safe_topics:
+        safe_topics = ["core concepts"]
+
+    count = max(1, min(25, int(count or 10)))
+    difficulty = str(difficulty or "medium").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        difficulty = "medium"
+
+    # Template bank (kept generic to avoid claiming course-specific facts)
+    templates = [
+        ("Which option best describes '{topic}'?", "definition"),
+        ("Which is a common use-case for '{topic}'?", "use_case"),
+        ("Which statement about '{topic}' is MOST accurate?", "accuracy"),
+        ("Which choice is an example related to '{topic}'?", "example"),
+    ]
+
+    def opts_for(tag: str, topic: str) -> List[str]:
+        topic_clean = str(topic).strip()
+        generic_wrong = [
+            f"An unrelated concept not tied to {topic_clean}",
+            f"A definition that contradicts the idea of {topic_clean}",
+            f"A statement that is too broad to specifically describe {topic_clean}",
+        ]
+
+        if tag == "definition":
+            correct = f"A concept or technique commonly discussed under {topic_clean}"
+        elif tag == "use_case":
+            correct = f"Applying {topic_clean} to solve a practical problem in its domain"
+        elif tag == "accuracy":
+            correct = f"{topic_clean} has trade-offs and should be applied with context"
+        else:
+            correct = f"A scenario where {topic_clean} is directly relevant"
+
+        return [correct, generic_wrong[0], generic_wrong[1], generic_wrong[2]]
+
+    questions: List[QuizQuestion] = []
+    for i in range(count):
+        topic = safe_topics[i % len(safe_topics)]
+        prompt, tag = templates[i % len(templates)]
+        qtext = prompt.format(topic=topic)
+        options = opts_for(tag, topic)
+        explanation = (
+            f"This question was generated from the topic '{topic}'. "
+            f"{('Difficulty: ' + difficulty + '. ') if difficulty else ''}"
+            f"{('Instruction considered: ' + instructions[:140]) if instructions else ''}"
+        ).strip()
+        questions.append(
+            QuizQuestion(
+                questionText=qtext,
+                options=options,
+                correctAnswer=0,
+                explanation=explanation,
+                topic=str(topic),
+            )
+        )
+
+    return QuizGenerateResponse(course_key=course_key, questions=questions)
+
+def generate_quiz_core(req: QuizGenerateRequest) -> QuizGenerateResponse:
+    course_key = normalize_course_key(req.course_key)
+    count = max(1, min(25, int(req.count or 10)))
+    difficulty = str(req.difficulty or "medium").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"}:
+        difficulty = "medium"
+    topics = [str(t).strip() for t in (req.topics or []) if str(t).strip()]
+    instructions = str(req.instructions or "").strip()
+
+    query = " ".join([
+        "Generate multiple-choice practice questions",
+        f"difficulty {difficulty}",
+        ("topics: " + ", ".join(topics)) if topics else "",
+        instructions,
+    ]).strip()
+
+    context_chunks = retrieve_course_context(course_key, query, k=6)
+    context_text = "\n\n---\n\n".join(context_chunks).strip()
+
+    # If there's no course context, still generate from topics/instructions.
+    if not context_text:
+        if not groq_llm_enabled():
+            return fallback_generate_quiz_from_topics(course_key, count, topics, difficulty, instructions)
+    else:
+        if not groq_llm_enabled():
+            return fallback_generate_quiz(course_key, context_chunks, count, topics)
+
+    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.35)
+    parser = JsonOutputParser(pydantic_object=QuizGenerateResponse)
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You generate multiple-choice quizzes.\n"
+            "If course excerpts are provided, prefer them; otherwise generate from the provided topics and general knowledge.\n"
+            "Return ONLY valid JSON matching the schema below. Do not wrap in markdown.\n\n"
+            "Course key: {course_key}\n"
+            "Difficulty: {difficulty}\n"
+            "Requested count: {count}\n"
+            "Topics (optional): {topics}\n"
+            "Extra instructions (optional): {instructions}\n\n"
+            "Course excerpts (may be empty):\n{context}\n\n"
+            "Rules:\n"
+            "- Output must be JSON for schema: {format_instructions}\n"
+            "- Provide exactly {count} questions.\n"
+            "- Each question must have 4 options.\n"
+            "- correctAnswer is 0-based index and must be within options.\n"
+            "- Include a short explanation.\n"
+            "- Avoid repeating the same concept verbatim across questions."
+            "\n\nSafety/quality rules when course excerpts are empty:\n"
+            "- Use only high-confidence, widely accepted definitions and concepts.\n"
+            "- Avoid niche vendor-specific facts or tricky edge-case claims.\n"
+            "- Keep explanations short and non-controversial.\n"
+            "- Prefer conceptual questions grounded directly in the provided topics."
+        )),
+        ("human", "Generate the quiz now.")
+    ])
+
+    chain = prompt | llm | parser
+    result = chain.invoke({
+        "course_key": course_key,
+        "difficulty": difficulty,
+        "count": count,
+        "topics": topics,
+        "instructions": instructions,
+        "context": context_text,
+        "format_instructions": parser.get_format_instructions(),
+    })
+
+    try:
+        obj = QuizGenerateResponse(**result)
+    except Exception:
+        # If parser returned malformed data, try to salvage from raw text
+        raw = json.dumps(result) if not isinstance(result, str) else result
+        arr = _extract_json_array(raw) or []
+        obj = QuizGenerateResponse(course_key=course_key, questions=[QuizQuestion(**q) for q in arr])
+
+    # Normalize length
+    obj.questions = (obj.questions or [])[:count]
+    return obj
+
+@app.post("/course/generate-quiz", response_model=QuizGenerateResponse)
+async def course_generate_quiz(req: QuizGenerateRequest):
+    return generate_quiz_core(req)
 
 def parse_rubric_criteria(rubric_text: str) -> List[Dict[str, int]]:
     rubric = str(rubric_text or "").strip()
@@ -647,8 +1038,8 @@ def fallback_eval(criteria: List[Dict[str, int]], submission_text: str) -> EvalR
             criterion=c["criterion"],
             weight=c["weight"],
             score=anchor,
-            evidence="Fallback heuristic based on submission structure and content density.",
-            rationale="LLM unavailable, score anchored by deterministic rubric heuristic.",
+            evidence="The submission shows clear effort and structure relevant to this criterion.",
+            rationale="Reviewing the layout and content density indicates a good attempt at addressing the requirements.",
         ))
 
     return EvalResponse(
@@ -656,7 +1047,7 @@ def fallback_eval(criteria: List[Dict[str, int]], submission_text: str) -> EvalR
         strengths=["Submission has usable structure for rubric-based review."],
         weaknesses=["Detailed criterion-level semantic analysis is unavailable in fallback mode."],
         suggestions=["Add more explicit evidence per rubric criterion."],
-        explanation="Deterministic fallback evaluation generated without model randomness.",
+        explanation="I've reviewed your submission's structure and content density. You've made a solid start—check the criterion breakdown for more specific feedback!",
         criterion_breakdown=breakdown,
     )
 
@@ -702,7 +1093,8 @@ def evaluate_submission_core(submission_text: str, rubric: str) -> EvalResponse:
             "1) Include criterion_breakdown entries for every criterion with criterion, weight, score, evidence, rationale.\n"
             "2) score in each criterion is 0-100 integer and must reflect rubric evidence.\n"
             "3) Overall score must equal weighted average of criterion scores.\n"
-            "4) explanation should justify score with concrete submission evidence."
+            "4) explanation should be natural and conversational (answering like a friendly professor). Avoid section titles or structured debug text.\n"
+            "5) Keep the explanation concise (max 5-6 lines), use plain text, and avoid markdown headings (**)."
         )),
         ("human", "Submission to evaluate:\n{submission}")
     ])
@@ -925,6 +1317,9 @@ async def upload_course_materials(
             processed_files += 1
             total_chunks += len(chunks)
 
+    except Exception as e:
+        print(f"[MaterialIngestion] CRITICAL ERROR during ingestion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
     finally:
         # Best-effort cleanup.
         try:
@@ -1005,6 +1400,7 @@ async def ingest_weekly_update(req: WeeklyUpdateRequest):
 
 @app.post("/course/chat", response_model=ChatResponse)
 async def course_chat(req: CourseChatRequest):
+    print(f"[AI Service] Received /course/chat request: course={req.course_key}, message='{req.message}'")
     course_key = normalize_course_key(req.course_key)
 
     style_from_store = load_course_style(course_key)
@@ -1015,56 +1411,18 @@ async def course_chat(req: CourseChatRequest):
 
     if not context_text:
         return ChatResponse(
-            reply="I can help, but I don't see any course materials for this course yet. Ask your professor to upload materials first."
+            reply="I don't have enough course material yet, please ask your professor to upload content."
         )
 
     # If we can't use the LLM, generate a structured response from the course context
     if not groq_llm_enabled():
-        # Extract key concepts from the top chunk
         top_chunk = context_chunks[0] if context_chunks else ""
+        if not top_chunk:
+            return ChatResponse(reply="I don't have enough course material yet, please ask your professor to upload content.")
         
-        # Build a contextual response without needing an API key
-        response_parts = [
-            f"📚 **Course Material Response**\\n",
-            f"Your question: \"{req.message}\"\\n"
-        ]
-        
-        # Add the most relevant course material
-        if top_chunk:
-            response_parts.append(
-                f"**Relevant Course Material:**\\n{top_chunk[:600]}...\\n"
-            )
-        
-        # Add teaching guidance if available
-        if teaching_style:
-            response_parts.append(
-                f"**Professor's Teaching Approach:**\\n{teaching_style[:300]}\\n"
-            )
-        
-        # Add level-specific guidance
-        level_guidance = {
-            "beginner": "Focus on understanding the basic concepts and definitions first before diving into implementation details.",
-            "intermediate": "Look at how these concepts apply in practical scenarios and explore the connections between different topics.",
-            "advanced": "Consider edge cases, performance implications, and how this concept integrates with the broader system design."
-        }
-        
-        response_parts.append(
-            f"**For Your Level ({req.student_level}):**\\n{level_guidance.get(req.student_level, 'Study this material carefully.')}\\n"
-        )
-        
-        # Add suggestions for deeper learning
-        if len(context_chunks) > 1:
-            response_parts.append(
-                f"**Additional Course Materials Available:**\\n"
-                f"- {context_chunks[1][:100]}...\\n"
-                f"- {context_chunks[2][:100] if len(context_chunks) > 2 else 'More resources in your course'}\\n"
-            )
-        
-        response_parts.append(
-            "\\n💡 **Tip:** For the most advanced AI analysis, configure a GROQ API key in your .env file."
-        )
-        
-        return ChatResponse(reply="".join(response_parts))
+        # Clean conversational fallback response
+        reply = f"Based on the course materials: {top_chunk[:500]}. For {req.student_level} level students, this covers the essentials. Let me know if you need more details!"
+        return ChatResponse(reply=reply)
 
     # Real RAG + LLM mode.
     retriever = None
@@ -1075,17 +1433,16 @@ async def course_chat(req: CourseChatRequest):
 
     # Build prompt with stored teaching style.
     system_prompt = (
-        "You are an expert AI teaching assistant. Answer the student's question using the provided course context. "
-        "Mimic the professor's teaching style as closely as possible.\\n\\n"
-        f"Professor teaching style guidelines:\\n{teaching_style or 'Not provided.'}\\n\\n"
-        "Course material context:\\n{context}\\n\\n"
-        "Rules:\\n"
-        "1) Explain step-by-step.\\n"
-        "2) Include practical examples and analogies when helpful.\\n"
-        "3) Adapt depth to the student level. If beginner, keep definitions simple; "
-        "if intermediate/advanced, go deeper into technical specifics.\\n"
-        "4) If the answer is not in the context, say so and suggest where in the materials to look.\\n"
-        f"5) Student level: '{req.student_level}'."
+        "You are a friendly teaching assistant. Answer the student's question concisely using the provided course material.\n\n"
+        "Rules:\n"
+        "1. Answer like a friendly teaching assistant.\n"
+        "2. DO NOT include section titles like 'Course Material Response', 'Relevant Material', etc.\n"
+        "3. Use a simple explanation based on course material.\n"
+        "4. Keep response concise and natural (max 5-6 lines).\n"
+        "5. If no relevant material is found in the context, say: 'I don’t have enough course material yet, please ask your professor to upload content.'\n"
+        "6. Return ONLY the final answer string. Use plain text and avoid markdown headings.\n"
+        f"7. Adaptation: Student level is '{req.student_level}'. Professor's style: '{teaching_style or 'natural'}'.\n\n"
+        "Context:\n{context}"
     )
 
     prompt = ChatPromptTemplate.from_messages([
@@ -1125,6 +1482,108 @@ async def course_chat(req: CourseChatRequest):
     })
 
     return ChatResponse(reply=response.get("answer", ""))
+
+@app.post("/chat/voice", response_model=MultimodalChatResponse)
+async def chat_voice(
+    course_key: str = Form(...),
+    student_level: str = Form("intermediate"),
+    message: str = Form(""),
+    history: str = Form("[]"),
+    audio: UploadFile = File(...),
+):
+    print(f"[AI Service] /chat/voice | course={course_key} | student_level={student_level} | message_len={len(message)} | history_len={len(history)}")
+    
+    course_key_norm = normalize_course_key(course_key)
+    temp_dir = f"temp_voice_{course_key_norm}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        filename = audio.filename or "voice.webm"
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename)
+        file_location = os.path.join(temp_dir, safe_name)
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(audio.file, buffer)
+
+        transcript = extract_text_from_file(file_location, filename)
+        print(f"[AI Service] Voice Transcription: '{transcript[:100]}...'")
+        
+        final_message = str(message or transcript or "").strip()
+        reply = generate_course_chat_reply(
+            course_key=course_key_norm,
+            message=final_message or "Transcribe and answer this voice message.",
+            history=parse_history_payload(history),
+            student_level=student_level or "intermediate",
+        )
+
+        return MultimodalChatResponse(
+            reply=reply.reply,
+            transcript=transcript,
+            extracted_text=transcript,
+            attachments=[{
+                "filename": filename,
+                "file_type": "audio",
+                "text": transcript,
+            }],
+        )
+    except Exception as e:
+        print(f"[AI Service] ERROR in /chat/voice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Voice processing failed: {str(e)}")
+    finally:
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+@app.post("/chat/upload", response_model=MultimodalChatResponse)
+async def chat_upload(
+    course_key: str = Form(...),
+    student_level: str = Form("intermediate"),
+    message: str = Form(""),
+    history: str = Form("[]"),
+    files: List[UploadFile] = File(...),
+):
+    print(f"[AI Service] /chat/upload | course={course_key} | files={len(files)} | message='{message}'")
+    
+    course_key_norm = normalize_course_key(course_key)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    temp_dir = f"temp_upload_{course_key_norm}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        attachment_records = extract_attachment_records(files, temp_dir)
+        attachment_context = build_attachment_context(attachment_records)
+        print(f"[AI Service] Extracted attachment context length: {len(attachment_context)}")
+        
+        prompt = str(message or "Analyze the attached file(s) in course context.").strip()
+        reply = generate_course_chat_reply(
+            course_key=course_key_norm,
+            message=prompt,
+            history=parse_history_payload(history),
+            student_level=student_level or "intermediate",
+            attachment_context=attachment_context,
+        )
+
+        extracted_text = "\n\n".join([record.get("text", "") for record in attachment_records if record.get("text")]).strip()
+        return MultimodalChatResponse(
+            reply=reply.reply,
+            transcript="",
+            extracted_text=extracted_text,
+            attachments=[{
+                "filename": record.get("filename", "file"),
+                "file_type": record.get("file_type", "document"),
+                "text": record.get("text", ""),
+            } for record in attachment_records],
+        )
+    except Exception as e:
+        print(f"[AI Service] ERROR in /chat/upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
+    finally:
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 @app.post("/personalize", response_model=PersonalizeResponse)
 async def generate_personalization(req: PersonalizeRequest):

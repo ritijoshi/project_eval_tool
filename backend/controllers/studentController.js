@@ -1,11 +1,16 @@
 // Student Controller mimicking real DB / AI behavior
 
 const axios = require('axios');
+const mongoose = require('mongoose');
 const FormData = require('form-data');
 const Feedback = require('../models/Feedback');
+const Course = require('../models/Course');
+const Rubric = require('../models/Rubric');
 const User = require('../models/User');
 const { getProfile, updateQuizScore, addInteraction, addWeakTopics } = require('../utils/studentProfileStore');
+const Proposal = require('../models/Proposal');
 const { getAiServiceUrl } = require('../config/services');
+const { resolveCourseCode } = require('../utils/courseContext');
 
 const AI_BASE = getAiServiceUrl();
 
@@ -83,9 +88,29 @@ const createFeedbackRecord = async ({ studentId, courseKey, evaluationData, subm
 const getLearningPath = async (req, res) => {
     try {
         const userId = req.user?._id || 'anonymous';
+        const courseId = req.query?.courseId;
+
+        let resolvedCourseKey = null;
+        let normalizedCourseId = null;
+
+        if (courseId && courseId !== 'all') {
+            if (!mongoose.Types.ObjectId.isValid(String(courseId))) {
+                return res.status(400).json({ message: 'Invalid courseId' });
+            }
+
+            const enrolled = await Course.exists({ _id: courseId, students: userId });
+            if (!enrolled) {
+                return res.status(403).json({ message: 'Not enrolled in this course' });
+            }
+
+            normalizedCourseId = String(courseId);
+            resolvedCourseKey = await resolveCourseCode(courseId);
+        }
         const profile = getProfile(userId);
         const studentStats = {
             student_id: userId,
+            course_id: normalizedCourseId,
+            course_key: resolvedCourseKey || null,
             quiz_scores: profile.quiz_scores || {},
             weak_topics: profile.weak_topics || [],
             recent_interactions: profile.recent_interactions || []
@@ -103,7 +128,23 @@ const getLearningPath = async (req, res) => {
             const response = await axios.post(pythonServiceUrl, studentStats);
             res.status(200).json(response.data);
         } catch (error) {
-            res.status(503).json({ message: "AI personalization engine offline. Please start local AI microservice." });
+            const weakTopics = Array.isArray(profile.weak_topics) ? profile.weak_topics.filter(Boolean) : [];
+            const fallbackTopics = weakTopics.length > 0 ? weakTopics.slice(0, 3) : ['State Management', 'Problem Solving', 'Core Concepts'];
+            const quizScores = Object.values(profile.quiz_scores || {});
+            const averageScore = quizScores.length
+                ? Math.round(quizScores.reduce((sum, score) => sum + Number(score || 0), 0) / quizScores.length)
+                : 0;
+
+            res.status(200).json({
+                next_best_topic: fallbackTopics[0],
+                topics_to_revise: fallbackTopics,
+                practice_questions: [
+                    `Explain ${fallbackTopics[0]} in your own words.`,
+                    `Write one example that shows how ${fallbackTopics[0]} is used in practice.`,
+                ],
+                adaptive_message: `AI personalization is currently unavailable, so this is a fallback plan based on your stored progress${averageScore ? ` and an average quiz score of ${averageScore}%` : ''}.`,
+                fallback: true,
+            });
         }
     } catch (error) {
         res.status(500).json({ message: error.message });
@@ -112,8 +153,21 @@ const getLearningPath = async (req, res) => {
 
 const getLeaderboard = async (req, res) => {
     try {
-        const students = await User.find({ role: 'student' }).select('_id name').lean();
-        const feedbackDocs = await Feedback.find({ status: { $in: ['pending', 'reviewed', 'awaiting_response', 'resolved'] } })
+        const courseId = req.query?.courseId;
+        let studentsFilter = { role: 'student' };
+        let feedbackFilter = { status: { $in: ['pending', 'reviewed', 'awaiting_response', 'resolved'] } };
+
+        if (courseId && courseId !== 'all' && mongoose.Types.ObjectId.isValid(String(courseId))) {
+            const course = await Course.findById(courseId);
+            if (course) {
+                studentsFilter._id = { $in: course.students };
+                const courseKey = String(course.courseCode || '').trim().toLowerCase();
+                feedbackFilter.courseKey = courseKey;
+            }
+        }
+
+        const students = await User.find(studentsFilter).select('_id name').lean();
+        const feedbackDocs = await Feedback.find(feedbackFilter)
             .select('student courseKey aiEvaluation professorReview createdAt')
             .lean();
 
@@ -191,14 +245,23 @@ const getLeaderboard = async (req, res) => {
 
 const submitProposal = async (req, res) => {
     try {
-        console.log('Project proposal submitted:', req.body);
-        // Simulate Agent evaluation
-        const evaluation = {
-            status: "Evaluated",
-            score: "85/100",
-            feedback: "Great proposal. Strong architecture, but the UI/UX criteria could be defined more clearly based on the rubric."
-        };
-        res.status(201).json({ message: 'Proposal submitted and evaluated by AI Agent successfully.', evaluation });
+        const studentId = req.user?._id || 'anonymous';
+        const { courseId, ...payload } = req.body || {};
+
+        if (studentId === 'anonymous') {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        const proposal = await Proposal.create({
+            student: studentId,
+            course: courseId || null,
+            payload,
+        });
+
+        res.status(201).json({
+            message: 'Proposal submitted successfully.',
+            proposalId: proposal._id,
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -206,8 +269,9 @@ const submitProposal = async (req, res) => {
 
 const evaluateProject = async (req, res) => {
     try {
-        const { submission_text, rubric, course_key } = req.body;
+        const { submission_text, rubric, course_key, course_id } = req.body;
         const userId = req.user?._id || 'anonymous';
+        const resolvedCourseKey = course_key || (course_id ? await resolveCourseCode(course_id) : null);
         addInteraction(userId, `Project evaluation submitted: ${String(submission_text || '').slice(0, 220)}`);
         
         try {
@@ -224,7 +288,7 @@ const evaluateProject = async (req, res) => {
 
             const feedbackDoc = await createFeedbackRecord({
                 studentId: userId,
-                courseKey: course_key,
+                courseKey: resolvedCourseKey,
                 evaluationData: response.data,
                 submissionText: submission_text,
                 rubric,
@@ -244,7 +308,7 @@ const evaluateProject = async (req, res) => {
 
 const evaluateProjectFiles = async (req, res) => {
     try {
-        const { rubric, course_key } = req.body || {};
+        const { rubric, course_key, course_id } = req.body || {};
         const files = req.files || [];
 
         if (!rubric || !String(rubric).trim()) {
@@ -255,6 +319,7 @@ const evaluateProjectFiles = async (req, res) => {
         }
 
         const userId = req.user?._id || 'anonymous';
+        const resolvedCourseKey = course_key || (course_id ? await resolveCourseCode(course_id) : null);
         addInteraction(userId, `Project evaluation submitted with ${files.length} file(s).`);
 
         const pythonServiceUrl = `${AI_BASE}/evaluate/files`;
@@ -282,7 +347,7 @@ const evaluateProjectFiles = async (req, res) => {
 
             const feedbackDoc = await createFeedbackRecord({
                 studentId: userId,
-                courseKey: course_key,
+                courseKey: resolvedCourseKey,
                 evaluationData: response.data,
                 submissionText: files.map((f) => f.originalname).join(', '),
                 rubric,
@@ -330,6 +395,71 @@ const updatePersonalizationInputs = async (req, res) => {
     }
 };
 
+const formatRubricAsText = (rubric) => {
+    if (!rubric) return '';
+    const criteria = Array.isArray(rubric.criteria) ? rubric.criteria : [];
+    if (!criteria.length) return '';
+
+    return criteria
+        .map((criterion, idx) => {
+            const title = String(criterion.title || '').trim();
+            const weight = Number(criterion.weight);
+            const desc = String(criterion.description || '').trim();
+            const weightLabel = Number.isFinite(weight) ? ` (${weight}%)` : '';
+            const descLabel = desc ? ` - ${desc}` : '';
+            return `${idx + 1}. ${title}${weightLabel}${descLabel}`.trim();
+        })
+        .filter(Boolean)
+        .join('\n');
+};
+
+const getActiveRubricForCourse = async (req, res) => {
+    try {
+        const studentId = req.user?._id;
+        const courseId = req.query?.courseId;
+
+        if (!studentId) {
+            return res.status(401).json({ message: 'Unauthorized' });
+        }
+
+        if (!courseId || courseId === 'all') {
+            return res.status(400).json({ message: 'courseId is required' });
+        }
+
+        if (!mongoose.Types.ObjectId.isValid(String(courseId))) {
+            return res.status(400).json({ message: 'Invalid courseId' });
+        }
+
+        const course = await Course.findOne({ _id: courseId, students: studentId })
+            .select('_id courseCode professor')
+            .lean();
+        if (!course) {
+            return res.status(403).json({ message: 'Not enrolled in this course' });
+        }
+
+        const courseKey = String(course.courseCode || '').trim().toLowerCase();
+        const professorId = course.professor;
+
+        const rubric = await Rubric.findOne({
+            professor: professorId,
+            courseKey,
+            isActive: true,
+        })
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return res.status(200).json({
+            courseId: String(course._id),
+            courseKey,
+            rubric: rubric || null,
+            rubricText: rubric ? formatRubricAsText(rubric) : '',
+            updatedAt: rubric?.updatedAt || null,
+        });
+    } catch (error) {
+        return res.status(500).json({ message: error.message || 'Failed to load rubric' });
+    }
+};
+
 module.exports = {
     getLearningPath,
     getLeaderboard,
@@ -337,4 +467,5 @@ module.exports = {
     evaluateProject,
     evaluateProjectFiles,
     updatePersonalizationInputs,
+    getActiveRubricForCourse,
 };

@@ -1,18 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Users, Upload, LayoutDashboard, Target, Book, MessagesSquare, LogOut, Filter, BarChart3, TrendingUp, Sun, Moon, ChevronDown, AlertCircle, HelpCircle } from 'lucide-react';
+import { Users, Upload, LayoutDashboard, Target, Book, MessagesSquare, LogOut, Filter, BarChart3, TrendingUp, Sun, Moon, ChevronDown, AlertCircle, HelpCircle, Trash2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer, Cell, ScatterChart, Scatter } from 'recharts';
 import axios from 'axios';
 import ProfessorMaterialsUploader from '../components/ProfessorMaterialsUploader';
 import QuickGuide from '../components/QuickGuide';
 import EvaluationReviewer from '../components/EvaluationReviewer';
 import ProfessorAssignmentsPanel from '../components/ProfessorAssignmentsPanel';
+import AnnouncementsPanel from '../components/AnnouncementsPanel';
 import { API_BASE } from '../config/api';
+import CourseSwitcher from '../components/CourseSwitcher';
+import { useActiveCourse } from '../context/ActiveCourseContext';
+import { useWebSocket } from '../hooks/useWebSocket';
+import SummaryEvaluation from './SummaryEvaluation';
+import CourseGroupChat from '../components/CourseGroupChat';
 
 const ProfessorDashboard = () => {
   const navigate = useNavigate();
+  const { on, off } = useWebSocket();
   const [analytics, setAnalytics] = useState(null);
-  const [filterCourse, setFilterCourse] = useState('All');
+  const [courseProgressAnalytics, setCourseProgressAnalytics] = useState(null);
+  const [courseProgressLoading, setCourseProgressLoading] = useState(false);
   const [filterTopic, setFilterTopic] = useState('All');
   const [filterStudent, setFilterStudent] = useState('All');
   const [selectedStudent, setSelectedStudent] = useState(null);
@@ -37,6 +45,48 @@ const ProfessorDashboard = () => {
   const [weeklyUpdateHistory, setWeeklyUpdateHistory] = useState([]);
   const [weeklyUpdateMessage, setWeeklyUpdateMessage] = useState('');
   const [weeklyUpdateSaving, setWeeklyUpdateSaving] = useState(false);
+  const [courses, setCourses] = useState([]);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+  const [courseForm, setCourseForm] = useState({ title: '', description: '' });
+  const [courseMessage, setCourseMessage] = useState('');
+  const [courseDeleteStatus, setCourseDeleteStatus] = useState({});
+  const [inviteInputs, setInviteInputs] = useState({});
+  const [inviteStatus, setInviteStatus] = useState({});
+  const { activeCourseId, activeCourse, isAllCourses: _isAllCourses, setActiveCourseId, refreshCourses } = useActiveCourse();
+  const [assignments, setAssignments] = useState([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentForm, setAssignmentForm] = useState({
+    title: '',
+    description: '',
+    deadlineDate: '',
+    deadlineTime: '',
+    maxPoints: '100',
+    rubric: '',
+    files: [],
+  });
+  const [assignmentMessage, setAssignmentMessage] = useState('');
+  const [assignmentSubmissions, setAssignmentSubmissions] = useState({});
+  const [assignmentSubmissionsLoading, setAssignmentSubmissionsLoading] = useState({});
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState('');
+  const [gradeInputs, setGradeInputs] = useState({});
+
+  const [practiceTests, setPracticeTests] = useState([]);
+  const [practiceTestsLoading, setPracticeTestsLoading] = useState(false);
+  const [practiceTestForm, setPracticeTestForm] = useState({
+    title: '',
+    topics: '',
+    difficulty: 'medium',
+  });
+  const [practiceQuestions, setPracticeQuestions] = useState([]);
+  const [practiceGenerate, setPracticeGenerate] = useState({ count: 10, instructions: '' });
+  const [practiceGenerating, setPracticeGenerating] = useState(false);
+  const [practiceTestMessage, setPracticeTestMessage] = useState('');
+  const [practiceStatusNotice, setPracticeStatusNotice] = useState(null);
+  const [practiceStatusUpdating, setPracticeStatusUpdating] = useState({});
+  const [practiceResults, setPracticeResults] = useState([]);
+  const [practiceResultsLoading, setPracticeResultsLoading] = useState(false);
+  const [showPracticeStats, setShowPracticeStats] = useState(false);
+  const [practiceLeaderboardTestId, setPracticeLeaderboardTestId] = useState('');
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('theme') || 'dark';
@@ -47,10 +97,30 @@ const ProfessorDashboard = () => {
       try {
         const token = localStorage.getItem('token');
         const config = { headers: { Authorization: `Bearer ${token}` } };
-        const res = await axios.get(`${API_BASE}/api/professor/analytics`, config);
+        const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+        const res = await axios.get(`${API_BASE}/api/professor/analytics${courseQuery}`, config);
         setAnalytics(res.data);
       } catch (err) {
         console.error("Failed to fetch analytics", err);
+      }
+    };
+
+    const fetchCourseProgressAnalytics = async () => {
+      if (!activeCourseId || activeCourseId === 'all') {
+        setCourseProgressAnalytics(null);
+        return;
+      }
+
+      try {
+        setCourseProgressLoading(true);
+        const token = localStorage.getItem('token');
+        const config = { headers: { Authorization: `Bearer ${token}` } };
+        const res = await axios.get(`${API_BASE}/api/analytics/course/${activeCourseId}`, config);
+        setCourseProgressAnalytics(res.data || null);
+      } catch {
+        setCourseProgressAnalytics(null);
+      } finally {
+        setCourseProgressLoading(false);
       }
     };
     const fetchRubrics = async () => {
@@ -59,7 +129,7 @@ const ProfessorDashboard = () => {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/professor/rubrics`, config);
         setRubrics(Array.isArray(res.data?.rubrics) ? res.data.rubrics : []);
-      } catch (err) {
+      } catch {
         setRubrics([]);
       }
     };
@@ -70,15 +140,639 @@ const ProfessorDashboard = () => {
         const config = { headers: { Authorization: `Bearer ${token}` } };
         const res = await axios.get(`${API_BASE}/api/professor/weekly-updates?limit=8`, config);
         setWeeklyUpdateHistory(Array.isArray(res.data?.updates) ? res.data.updates : []);
-      } catch (err) {
+      } catch {
         setWeeklyUpdateHistory([]);
       }
     };
 
     fetchAnalytics();
+    fetchCourseProgressAnalytics();
     fetchRubrics();
     fetchWeeklyUpdates();
-  }, []);
+  }, [activeCourseId]);
+
+  useEffect(() => {
+    if (activeCourse?.courseCode && !weeklyUpdateForm.courseKey) {
+      setWeeklyUpdateForm((prev) => ({ ...prev, courseKey: activeCourse.courseCode }));
+    }
+  }, [activeCourse, weeklyUpdateForm.courseKey]);
+
+  useEffect(() => {
+    if (activeCourse?.courseCode && !newRubric.courseKey) {
+      setNewRubric((prev) => ({ ...prev, courseKey: activeCourse.courseCode }));
+    }
+  }, [activeCourse, newRubric.courseKey]);
+
+  useEffect(() => {
+    if (activeTab === 'courses') {
+      fetchAssignments();
+      fetchPracticeTests();
+      fetchPracticeResults();
+    }
+  }, [activeTab, activeCourseId]);
+
+  useEffect(() => {
+    const handlePracticeUpdated = (data) => {
+      if (!data) return;
+      if (activeTab !== 'courses') return;
+      if (!activeCourseId || activeCourseId === 'all') return;
+      if (data.courseId && String(data.courseId) !== String(activeCourseId)) return;
+
+      if (data.kind === 'test-created') {
+        fetchPracticeTests();
+        return;
+      }
+
+      if (data.kind === 'test-updated') {
+        fetchPracticeTests();
+        return;
+      }
+
+      fetchPracticeResults();
+    };
+
+    on('practice-updated', handlePracticeUpdated);
+    return () => {
+      off('practice-updated', handlePracticeUpdated);
+    };
+  }, [on, off, activeTab, activeCourseId, showPracticeStats]);
+
+  const setPracticeTestActive = async (test, nextActive) => {
+    const testId = test?._id;
+    if (!testId) return;
+
+    const prevActive = test?.isActive !== false;
+
+    setPracticeStatusNotice(null);
+    setPracticeStatusUpdating((prev) => ({ ...prev, [testId]: true }));
+    setPracticeTests((prev) =>
+      prev.map((item) => (String(item._id) === String(testId) ? { ...item, isActive: Boolean(nextActive) } : item))
+    );
+
+    try {
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.patch(
+        `${API_BASE}/api/tests/${testId}/active`,
+        { isActive: Boolean(nextActive) },
+        config
+      );
+      const resolvedActive = res?.data?.test?.isActive !== false;
+      setPracticeTests((prev) =>
+        prev.map((item) => (String(item._id) === String(testId) ? { ...item, isActive: resolvedActive } : item))
+      );
+      setPracticeStatusNotice({
+        type: 'success',
+        text: `"${test?.title || 'Test'}" is now ${resolvedActive ? 'Active' : 'Inactive'}.`,
+      });
+      fetchPracticeTests();
+    } catch (err) {
+      setPracticeTests((prev) =>
+        prev.map((item) => (String(item._id) === String(testId) ? { ...item, isActive: prevActive } : item))
+      );
+      setPracticeStatusNotice({
+        type: 'error',
+        text: err.response?.data?.message || 'Failed to update test status.',
+      });
+      setPracticeTestMessage(err.response?.data?.message || 'Failed to update test status.');
+    } finally {
+      setPracticeStatusUpdating((prev) => ({ ...prev, [testId]: false }));
+    }
+  };
+
+  useEffect(() => {
+    if (!showPracticeStats) return;
+    if (!activeCourseId || activeCourseId === 'all') return;
+
+    if (!practiceLeaderboardTestId && Array.isArray(practiceTests) && practiceTests.length > 0) {
+      setPracticeLeaderboardTestId(practiceTests[0]._id);
+    }
+  }, [showPracticeStats, activeCourseId, practiceLeaderboardTestId, practiceTests]);
+
+  const fetchCourses = async () => {
+    try {
+      setCoursesLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/professor/courses`, config);
+      setCourses(Array.isArray(res.data?.records) ? res.data.records : []);
+    } catch {
+      setCourses([]);
+    } finally {
+      setCoursesLoading(false);
+    }
+  };
+
+  const fetchAssignments = async () => {
+    try {
+      setAssignmentsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const courseQuery = activeCourseId && activeCourseId !== 'all' ? `?courseId=${activeCourseId}` : '';
+      const res = await axios.get(`${API_BASE}/api/professor/assignments${courseQuery}`, config);
+      setAssignments(Array.isArray(res.data?.assignments) ? res.data.assignments : []);
+    } catch {
+      setAssignments([]);
+    } finally {
+      setAssignmentsLoading(false);
+    }
+  };
+
+  const fetchPracticeTests = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeTests([]);
+      return;
+    }
+
+    try {
+      setPracticeTestsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/tests?courseId=${activeCourseId}`, config);
+      setPracticeTests(Array.isArray(res.data?.tests) ? res.data.tests : []);
+    } catch {
+      setPracticeTests([]);
+    } finally {
+      setPracticeTestsLoading(false);
+    }
+  };
+
+  const validatePracticeQuestions = (questions) => {
+    const list = Array.isArray(questions) ? questions : [];
+    if (list.length === 0) return 'Generate questions first.';
+
+    for (let i = 0; i < list.length; i += 1) {
+      const q = list[i] || {};
+      const questionText = String(q.questionText || '').trim();
+      const options = Array.isArray(q.options) ? q.options.map((o) => String(o ?? '').trim()).filter(Boolean) : [];
+      const correctAnswer = Number(q.correctAnswer);
+
+      if (!questionText) return `Question ${i + 1}: question text is required.`;
+      if (options.length < 2) return `Question ${i + 1}: add at least 2 options.`;
+      if (!Number.isInteger(correctAnswer) || correctAnswer < 0 || correctAnswer >= options.length) {
+        return `Question ${i + 1}: choose a valid correct option.`;
+      }
+    }
+
+    return '';
+  };
+
+  const normalizePracticeQuestionsForSubmit = (questions) => {
+    const list = Array.isArray(questions) ? questions : [];
+
+    return list.map((q) => {
+      const rawOptions = Array.isArray(q?.options) ? q.options.map((o) => String(o ?? '').trim()) : [];
+      const indexMap = new Map();
+      const normalizedOptions = [];
+
+      rawOptions.forEach((opt, oldIndex) => {
+        if (!opt) {
+          indexMap.set(oldIndex, null);
+          return;
+        }
+        indexMap.set(oldIndex, normalizedOptions.length);
+        normalizedOptions.push(opt);
+      });
+
+      const oldCorrect = Number(q?.correctAnswer);
+      const mappedCorrect = Number.isInteger(oldCorrect) ? indexMap.get(oldCorrect) : null;
+
+      return {
+        questionText: String(q?.questionText || '').trim(),
+        options: normalizedOptions,
+        correctAnswer: mappedCorrect === null || mappedCorrect === undefined ? -1 : Number(mappedCorrect),
+        explanation: String(q?.explanation || ''),
+        topic: String(q?.topic || ''),
+      };
+    });
+  };
+
+  const updatePracticeQuestion = (index, patch) => {
+    setPracticeQuestions((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (index < 0 || index >= list.length) return prev;
+      list[index] = { ...(list[index] || {}), ...(patch || {}) };
+      return list;
+    });
+  };
+
+  const updatePracticeOption = (questionIndex, optionIndex, value) => {
+    setPracticeQuestions((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      const q = list[questionIndex];
+      if (!q) return prev;
+      const options = Array.isArray(q.options) ? [...q.options] : [];
+      while (options.length <= optionIndex) options.push('');
+      options[optionIndex] = value;
+      list[questionIndex] = { ...q, options };
+      return list;
+    });
+  };
+
+  const createPracticeTest = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeTestMessage('Select a course before creating a practice test.');
+      return;
+    }
+
+    if (!practiceTestForm.title.trim()) {
+      setPracticeTestMessage('Title is required.');
+      return;
+    }
+
+    const topics = practiceTestForm.topics
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    if (topics.length === 0) {
+      setPracticeTestMessage('Enter syllabus topics (comma-separated) so the agent can generate questions.');
+      return;
+    }
+
+    // If the professor hasn't generated questions yet, do that first (and let them edit).
+    if (!Array.isArray(practiceQuestions) || practiceQuestions.length === 0) {
+      await generatePracticeQuestionsWithAi();
+      return;
+    }
+
+    const questionsPayload = normalizePracticeQuestionsForSubmit(practiceQuestions);
+    const validationError = validatePracticeQuestions(questionsPayload);
+    if (validationError) {
+      setPracticeTestMessage(validationError);
+      return;
+    }
+
+    try {
+      setPracticeTestMessage('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+
+      await axios.post(
+        `${API_BASE}/api/tests`,
+        {
+          courseId: activeCourseId,
+          title: practiceTestForm.title,
+          topics,
+          difficulty: practiceTestForm.difficulty,
+          createdBy: 'professor',
+          questions: questionsPayload,
+        },
+        config
+      );
+
+      setPracticeTestForm({ title: '', topics: '', difficulty: 'medium' });
+      setPracticeQuestions([]);
+      setPracticeTestMessage('Practice test created.');
+      fetchPracticeTests();
+    } catch (err) {
+      setPracticeTestMessage(err.response?.data?.message || 'Failed to create practice test.');
+    }
+  };
+
+  const generatePracticeQuestionsWithAi = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeTestMessage('Select a course before generating questions.');
+      return;
+    }
+
+    try {
+      setPracticeGenerating(true);
+      setPracticeTestMessage('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+
+      const topics = practiceTestForm.topics
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      if (topics.length === 0) {
+        setPracticeTestMessage('Enter syllabus topics (comma-separated) before generating.');
+        return;
+      }
+
+      const res = await axios.post(
+        `${API_BASE}/api/tests/generate`,
+        {
+          courseId: activeCourseId,
+          count: Number(practiceGenerate.count) || 10,
+          difficulty: practiceTestForm.difficulty,
+          topics,
+          instructions: practiceGenerate.instructions,
+        },
+        config
+      );
+
+      const questions = Array.isArray(res.data?.questions) ? res.data.questions : [];
+      if (!questions.length) {
+        setPracticeTestMessage('AI returned no questions. Upload more materials or adjust instructions.');
+        return;
+      }
+
+      const normalized = questions.map((q) => {
+        const opts = Array.isArray(q?.options) ? [...q.options] : [];
+        while (opts.length < 4) opts.push('');
+        return {
+          questionText: q?.questionText || '',
+          options: opts,
+          correctAnswer: Number.isInteger(Number(q?.correctAnswer)) ? Number(q.correctAnswer) : 0,
+          explanation: q?.explanation || '',
+          topic: q?.topic || '',
+        };
+      });
+
+      setPracticeQuestions(normalized);
+      if (!practiceTestForm.title.trim()) {
+        setPracticeTestForm((prev) => ({ ...prev, title: `Practice Quiz (${practiceTestForm.difficulty})` }));
+      }
+      setPracticeTestMessage('Generated questions loaded. Review/edit and click “Create Practice Test” to upload.');
+    } catch (err) {
+      setPracticeTestMessage(
+        err.response?.data?.message ||
+          'Failed to generate questions. Ensure AI service is running and course materials are uploaded.'
+      );
+    } finally {
+      setPracticeGenerating(false);
+    }
+  };
+
+  const fetchPracticeResults = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setPracticeResults([]);
+      return;
+    }
+
+    try {
+      setPracticeResultsLoading(true);
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/results?courseId=${activeCourseId}`, config);
+      setPracticeResults(Array.isArray(res.data?.results) ? res.data.results : []);
+    } catch {
+      setPracticeResults([]);
+    } finally {
+      setPracticeResultsLoading(false);
+    }
+  };
+
+  const openPracticeAnalytics = (test) => {
+    if (!test?._id) return;
+
+    setShowPracticeStats(true);
+    setPracticeLeaderboardTestId(String(test._id));
+    fetchPracticeResults();
+  };
+
+  const getPracticeAnalytics = (attempts) => {
+    const rawAttempts = Array.isArray(attempts) ? attempts : [];
+    const validAttempts = rawAttempts.filter((attempt) => Number.isFinite(Number(attempt?.score)));
+
+    // Requirement: consider only the 1st attempt of each unique student for analysis.
+    const orderedAttempts = [...validAttempts].sort(
+      (a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0)
+    );
+
+    const firstAttemptByStudent = new Map();
+    orderedAttempts.forEach((attempt) => {
+      const studentKey =
+        String(attempt?.studentId || '') ||
+        String(attempt?.student?._id || '') ||
+        String(attempt?.student?.email || '') ||
+        '';
+
+      if (!studentKey) {
+        // Fallback: keep attempt as-is (should be rare for professor results).
+        firstAttemptByStudent.set(String(attempt?.attemptId || attempt?._id || Math.random()), attempt);
+        return;
+      }
+
+      if (!firstAttemptByStudent.has(studentKey)) {
+        firstAttemptByStudent.set(studentKey, attempt);
+      }
+    });
+
+    const uniqueFirstAttempts = Array.from(firstAttemptByStudent.values());
+    const totalAttempts = uniqueFirstAttempts.length;
+    const totalScore = uniqueFirstAttempts.reduce((sum, attempt) => sum + Number(attempt?.score || 0), 0);
+    const totalTime = uniqueFirstAttempts.reduce((sum, attempt) => sum + Number(attempt?.timeTakenSeconds || 0), 0);
+    const passingAttempts = uniqueFirstAttempts.filter((attempt) => Number(attempt?.score || 0) >= 70).length;
+
+    const weakAreaCounts = new Map();
+    uniqueFirstAttempts.forEach((attempt) => {
+      (Array.isArray(attempt?.weakAreas) ? attempt.weakAreas : []).forEach((area) => {
+        const normalized = String(area || '').trim();
+        if (!normalized) return;
+        weakAreaCounts.set(normalized, (weakAreaCounts.get(normalized) || 0) + 1);
+      });
+    });
+
+    const orderedUniqueAttempts = [...uniqueFirstAttempts].sort(
+      (a, b) => new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0)
+    );
+
+    return {
+      totalAttempts,
+      averageScore: totalAttempts ? Math.round(totalScore / totalAttempts) : 0,
+      bestScore: totalAttempts ? Math.max(...validAttempts.map((attempt) => Number(attempt?.score || 0))) : 0,
+      averageTime: totalAttempts ? Math.round(totalTime / totalAttempts) : 0,
+      passRate: totalAttempts ? Math.round((passingAttempts / totalAttempts) * 100) : 0,
+      recentTrend: orderedUniqueAttempts.slice(-8).map((attempt, index) => ({
+        label: `A${index + 1}`,
+        score: Number(attempt?.score || 0),
+        date: attempt?.createdAt ? new Date(attempt.createdAt).toLocaleString() : '',
+        studentName: attempt?.student?.name || attempt?.student?.email || 'Student',
+        studentEmail: attempt?.student?.email || '',
+        attemptId: String(attempt?.attemptId || attempt?._id || ''),
+      })),
+      recentAttempts: orderedUniqueAttempts.slice(-12).reverse(),
+      weakAreas: Array.from(weakAreaCounts.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([area, count]) => ({ area, count })),
+    };
+  };
+
+  const createAssignment = async () => {
+    if (!activeCourseId || activeCourseId === 'all') {
+      setAssignmentMessage('Select a course before creating assignments.');
+      return;
+    }
+
+    const title = assignmentForm.title?.trim() || '';
+    const deadlineDate = String(assignmentForm.deadlineDate || '').trim();
+    const deadlineTime = String(assignmentForm.deadlineTime || '').trim();
+    const deadlineCombined = deadlineDate && deadlineTime ? `${deadlineDate}T${deadlineTime}` : '';
+
+    if (!title || !deadlineCombined) {
+      setAssignmentMessage('Title, deadline date, and deadline time are required.');
+      return;
+    }
+
+    const maxPointsNum = Number(assignmentForm.maxPoints);
+    if (!Number.isFinite(maxPointsNum) || maxPointsNum <= 0) {
+      setAssignmentMessage('Max points must be a positive number.');
+      return;
+    }
+
+    try {
+      setAssignmentMessage('');
+      const token = localStorage.getItem('token');
+      const form = new FormData();
+      form.append('title', title);
+      form.append('description', assignmentForm.description);
+      form.append('courseId', activeCourseId);
+      form.append('deadline', deadlineCombined);
+      form.append('maxPoints', String(maxPointsNum));
+      form.append('rubric', assignmentForm.rubric);
+      assignmentForm.files.forEach((file) => form.append('files', file));
+
+      await axios.post(`${API_BASE}/api/professor/assignments`, form, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      setAssignmentForm({
+        title: '',
+        description: '',
+        deadlineDate: '',
+        deadlineTime: '',
+        maxPoints: '100',
+        rubric: '',
+        files: [],
+      });
+      setAssignmentMessage('Assignment created.');
+      fetchAssignments();
+    } catch (err) {
+      setAssignmentMessage(err.response?.data?.message || 'Failed to create assignment.');
+    }
+  };
+
+  const fetchAssignmentSubmissions = async (assignmentId) => {
+    try {
+      setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: true }));
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.get(`${API_BASE}/api/professor/assignments/${assignmentId}/submissions`, config);
+      setAssignmentSubmissions((prev) => ({
+        ...prev,
+        [assignmentId]: Array.isArray(res.data?.submissions) ? res.data.submissions : [],
+      }));
+    } catch {
+      setAssignmentSubmissions((prev) => ({ ...prev, [assignmentId]: [] }));
+    } finally {
+      setAssignmentSubmissionsLoading((prev) => ({ ...prev, [assignmentId]: false }));
+    }
+  };
+
+  const saveSubmissionGrade = async (assignmentId, submissionId) => {
+    const payload = gradeInputs[submissionId] || {};
+    try {
+      const token = localStorage.getItem('token');
+      await axios.put(
+        `${API_BASE}/api/professor/assignments/${assignmentId}/submissions/${submissionId}/grade`,
+        {
+          score: payload.score,
+          feedback: payload.feedback,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      fetchAssignmentSubmissions(assignmentId);
+    } catch (err) {
+      setAssignmentMessage(err.response?.data?.message || 'Failed to save grade.');
+    }
+  };
+
+  const createCourse = async () => {
+    if (!courseForm.title.trim()) {
+      setCourseMessage('Course title is required.');
+      return;
+    }
+
+    try {
+      setCourseMessage('');
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.post(
+        `${API_BASE}/api/professor/courses`,
+        { title: courseForm.title, description: courseForm.description },
+        config
+      );
+      setCourseForm({ title: '', description: '' });
+      setCourseMessage('Course created successfully.');
+      fetchCourses();
+      refreshCourses();
+    } catch (err) {
+      setCourseMessage(err.response?.data?.message || 'Failed to create course.');
+    }
+  };
+
+  const inviteStudents = async (courseId) => {
+    const raw = String(inviteInputs[courseId] || '');
+    const emails = raw
+      .split(/\n|,/)
+      .map((email) => email.trim())
+      .filter(Boolean);
+
+    if (!emails.length) {
+      setInviteStatus((prev) => ({ ...prev, [courseId]: 'Add at least one email address.' }));
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      const res = await axios.post(
+        `${API_BASE}/api/professor/courses/${courseId}/invite`,
+        { emails },
+        config
+      );
+      const missing = Array.isArray(res.data?.missing) && res.data.missing.length
+        ? `Missing: ${res.data.missing.join(', ')}`
+        : '';
+      setInviteStatus((prev) => ({
+        ...prev,
+        [courseId]: missing ? `Invited. ${missing}` : 'Students invited successfully.',
+      }));
+      setInviteInputs((prev) => ({ ...prev, [courseId]: '' }));
+      fetchCourses();
+      refreshCourses();
+    } catch (err) {
+      setInviteStatus((prev) => ({
+        ...prev,
+        [courseId]: err.response?.data?.message || 'Invite failed.',
+      }));
+    }
+  };
+
+  const deleteCourse = async (course) => {
+    const courseId = course?._id;
+    if (!courseId) return;
+
+    const ok = window.confirm(
+      `Delete course "${course.title || 'Untitled'}" (code: ${course.courseCode || ''})? This cannot be undone.`
+    );
+    if (!ok) return;
+
+    try {
+      setCourseDeleteStatus((prev) => ({ ...prev, [courseId]: 'Deleting...' }));
+      const token = localStorage.getItem('token');
+      const config = { headers: { Authorization: `Bearer ${token}` } };
+      await axios.delete(`${API_BASE}/api/professor/courses/${courseId}`, config);
+
+      if (String(activeCourseId) === String(courseId)) {
+        setActiveCourseId('all');
+      }
+
+      setCourseDeleteStatus((prev) => ({ ...prev, [courseId]: 'Deleted.' }));
+      fetchCourses();
+      refreshCourses();
+    } catch (err) {
+      setCourseDeleteStatus((prev) => ({
+        ...prev,
+        [courseId]: err.response?.data?.message || 'Failed to delete course.',
+      }));
+    }
+  };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -91,7 +785,8 @@ const ProfessorDashboard = () => {
     try {
       const token = localStorage.getItem('token');
       const config = { headers: { Authorization: `Bearer ${token}` } };
-      const res = await axios.get(`${API_BASE}/api/feedback/evaluations?status=${status}`, config);
+      const courseQuery = activeCourseId && activeCourseId !== 'all' ? `&courseId=${activeCourseId}` : '';
+      const res = await axios.get(`${API_BASE}/api/feedback/evaluations?status=${status}${courseQuery}`, config);
       const normalizedEvaluations = Array.isArray(res.data)
         ? res.data
         : Array.isArray(res.data?.evaluations)
@@ -255,6 +950,43 @@ const ProfessorDashboard = () => {
             >
               <Book size={18} />
               <span>Assignments</span>
+            <button 
+              className={`prof-nav-btn ${activeTab === 'batch_evals' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('batch_evals')}
+            >
+              <Book size={18} />
+              <span>AI Batch Evaluator</span>
+            </button>
+            <button 
+              className={`prof-nav-btn ${activeTab === 'courses' ? 'is-active' : ''}`}
+              onClick={() => {
+                setActiveTab('courses');
+                fetchCourses();
+              }}
+            >
+              <Book size={18} />
+              <span>Course Management</span>
+            </button>
+            <button 
+              className={`prof-nav-btn ${activeTab === 'course-chat' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('course-chat')}
+            >
+              <MessagesSquare size={18} />
+              <span>Course Chat</span>
+            </button>
+            <button
+              className={`prof-nav-btn ${activeTab === 'announcements' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('announcements')}
+            >
+              <AlertCircle size={18} />
+              <span>Announcements</span>
+            </button>
+            <button
+              className={`prof-nav-btn ${activeTab === 'assignments' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('assignments')}
+            >
+              <Book size={18} />
+              <span>Assignments</span>
             </button>
           </nav>
 
@@ -271,10 +1003,6 @@ const ProfessorDashboard = () => {
               {isDark ? <Sun size={16} /> : <Moon size={16} />}
               <span>{isDark ? 'Light' : 'Dark'}</span>
             </button>
-            <button className="prof-nav-footer-btn logout" onClick={handleLogout}>
-              <LogOut size={16} />
-              <span>Exit</span>
-            </button>
           </div>
         </div>
       </div>
@@ -286,17 +1014,19 @@ const ProfessorDashboard = () => {
             <h1 className="prof-title">Intelligence Hub</h1>
             <p className="prof-subtitle">Welcome back, {professorName}</p>
           </div>
-          
+          <CourseSwitcher label="Active Course" />
           <div className="prof-filters">
             <div className="prof-filter-group">
               <Filter size={13} />
               <select 
-                value={filterCourse} 
-                onChange={(e) => setFilterCourse(e.target.value)} 
+                value={activeCourseId || 'all'}
+                onChange={(e) => setActiveCourseId(e.target.value)}
                 className="prof-select"
               >
-                <option>All Courses</option>
-                <option>CS501</option>
+                <option value="all">All Courses</option>
+                {courses.map((course) => (
+                  <option key={course._id} value={course._id}>{course.title}</option>
+                ))}
               </select>
             </div>
             <div className="prof-filter-group">
@@ -321,6 +1051,16 @@ const ProfessorDashboard = () => {
                 {analytics?.topicPerformance?.map((t) => (<option key={t.topic}>{t.topic}</option>))}
               </select>
             </div>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--error)', whiteSpace: 'nowrap' }}
+              onClick={handleLogout}
+              title="Logout"
+            >
+              <LogOut size={16} />
+              <span>Logout</span>
+            </button>
           </div>
         </header>
 
@@ -370,6 +1110,41 @@ const ProfessorDashboard = () => {
           </button>
           <button
             type="button"
+            className={`prof-tab ${activeTab === 'batch_evals' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('batch_evals')}
+          >
+            <Book size={16} />
+            AI Batch Evaluator
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'courses' ? 'is-active' : ''}`}
+            onClick={() => {
+              setActiveTab('courses');
+              fetchCourses();
+            }}
+          >
+            <Book size={16} />
+            Course Management
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'course-chat' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('course-chat')}
+          >
+            <MessagesSquare size={16} />
+            Course Chat
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'announcements' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('announcements')}
+          >
+            <AlertCircle size={16} />
+            Announcements
+          </button>
+          <button
+            type="button"
             className={`prof-tab ${activeTab === 'guide' ? 'is-active' : ''}`}
             onClick={() => setActiveTab('guide')}
           >
@@ -414,6 +1189,80 @@ const ProfessorDashboard = () => {
                     <h2 className="prof-stat-value">{analytics.overview.activeProjects}</h2>
                     <p className="prof-stat-detail">In progress</p>
                 </div>
+            </div>
+
+            <div className="prof-chart-panel" style={{ marginBottom: '1.5rem' }}>
+              <div className="prof-chart-header">
+                <div>
+                  <h3 className="prof-chart-title">Course-Aware Progress Insights</h3>
+                  <p className="prof-chart-desc">At-risk students, mastery signals, and difficult topics</p>
+                </div>
+                <Users size={18} className="text-primary" />
+              </div>
+
+              {courseProgressLoading ? (
+                <p style={{ color: 'var(--muted)' }}>Loading progress insights...</p>
+              ) : !courseProgressAnalytics ? (
+                <p style={{ color: 'var(--muted)' }}>Select a specific course to view detailed progress analytics.</p>
+              ) : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <div className="prof-stat-card" style={{ padding: '0.85rem' }}>
+                      <p className="prof-stat-label">Class Average</p>
+                      <h2 className="prof-stat-value">{Math.round(courseProgressAnalytics.summary?.classAverage || 0)}%</h2>
+                    </div>
+                    <div className="prof-stat-card" style={{ padding: '0.85rem' }}>
+                      <p className="prof-stat-label">At-Risk Students</p>
+                      <h2 className="prof-stat-value">{courseProgressAnalytics.summary?.atRiskCount || 0}</h2>
+                    </div>
+                    <div className="prof-stat-card" style={{ padding: '0.85rem' }}>
+                      <p className="prof-stat-label">Top Performer</p>
+                      <h2 className="prof-stat-value" style={{ fontSize: '1.1rem' }}>
+                        {courseProgressAnalytics.topPerformers?.[0]?.name || 'N/A'}
+                      </h2>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                    <div>
+                      <h4 style={{ marginBottom: '0.5rem' }}>Most Difficult Topics</h4>
+                      {Array.isArray(courseProgressAnalytics.difficultTopics) && courseProgressAnalytics.difficultTopics.length > 0 ? (
+                        <div style={{ display: 'grid', gap: '0.45rem' }}>
+                          {courseProgressAnalytics.difficultTopics.slice(0, 6).map((topic) => (
+                            <div key={topic.topicName} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem', border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
+                              <span>{topic.topicName}</span>
+                              <strong>{Math.round(topic.averageMastery || 0)}%</strong>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ color: 'var(--muted)' }}>No topic-level mastery yet.</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 style={{ marginBottom: '0.5rem' }}>Students Needing Help</h4>
+                      {Array.isArray(courseProgressAnalytics.atRiskStudents) && courseProgressAnalytics.atRiskStudents.length > 0 ? (
+                        <div style={{ display: 'grid', gap: '0.45rem' }}>
+                          {courseProgressAnalytics.atRiskStudents.slice(0, 6).map((student) => (
+                            <div key={student.studentId} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem' }}>
+                                <span>{student.name}</span>
+                                <strong>{Math.round(student.overallProgress || 0)}%</strong>
+                              </div>
+                              <p style={{ marginTop: '0.25rem', color: 'var(--muted)', fontSize: '0.8rem' }}>
+                                Weak: {(student.weakTopics || []).slice(0, 2).join(', ') || 'Not enough data'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p style={{ color: 'var(--muted)' }}>No at-risk students detected right now.</p>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="prof-charts-grid">
@@ -633,6 +1482,10 @@ const ProfessorDashboard = () => {
           )
         ) : activeTab === 'materials' ? (
           <ProfessorMaterialsUploader />
+        ) : activeTab === 'course-chat' ? (
+          <CourseGroupChat courseId={activeCourseId} />
+        ) : activeTab === 'announcements' ? (
+          <AnnouncementsPanel role="professor" activeCourseId={activeCourseId} activeCourse={activeCourse} />
         ) : activeTab === 'rubrics' ? (
           <div className="prof-rubric-builder">
             <div className="prof-rubric-container">
@@ -894,6 +1747,828 @@ const ProfessorDashboard = () => {
               )}
             </div>
           </div>
+        ) : activeTab === 'courses' ? (
+          <div className="prof-rubric-builder">
+            <div className="prof-rubric-container">
+              <div className="prof-rubric-panel">
+                <h2 className="prof-rubric-title">Create a Course</h2>
+                <div className="prof-rubric-form">
+                  <div className="prof-form-group">
+                    <label className="prof-form-label">Course Title</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Database Systems"
+                      value={courseForm.title}
+                      onChange={(e) => setCourseForm({ ...courseForm, title: e.target.value })}
+                      className="glass-input"
+                    />
+                  </div>
+                  <div className="prof-form-group">
+                    <label className="prof-form-label">Course Description</label>
+                    <textarea
+                      placeholder="Short summary of the course"
+                      value={courseForm.description}
+                      onChange={(e) => setCourseForm({ ...courseForm, description: e.target.value })}
+                      className="glass-input prof-textarea"
+                      rows="4"
+                    />
+                  </div>
+                  <button
+                    onClick={createCourse}
+                    className="btn-primary"
+                    style={{ width: '100%', marginTop: '10px' }}
+                  >
+                    Create Course
+                  </button>
+                  {courseMessage && (
+                    <p style={{ marginTop: '10px', color: 'var(--muted)', fontSize: '0.9rem' }}>{courseMessage}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="prof-rubric-list">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h2 className="prof-rubric-title">Your Courses ({courses.length})</h2>
+                  <button className="btn-secondary" onClick={fetchCourses}>Refresh</button>
+                </div>
+                {coursesLoading ? (
+                  <div className="prof-empty-state">
+                    <Book size={48} style={{ color: 'var(--muted)', opacity: 0.4 }} />
+                    <p>Loading courses...</p>
+                  </div>
+                ) : courses.length === 0 ? (
+                  <div className="prof-empty-state">
+                    <Book size={48} style={{ color: 'var(--muted)', opacity: 0.4 }} />
+                    <p>No courses yet. Create your first course to invite students.</p>
+                  </div>
+                ) : (
+                  <div className="prof-rubric-items">
+                    {courses.map((course) => (
+                      <div key={course._id} className="prof-rubric-item">
+                        <div className="prof-rubric-item-header">
+                          <h3 className="prof-rubric-item-name">{course.title}</h3>
+                          <span className="prof-rubric-score">Code: {course.courseCode}</span>
+                        </div>
+                        {course.description && (
+                          <p className="prof-rubric-item-criteria">{course.description}</p>
+                        )}
+                        <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.5rem' }}>
+                          {course.studentsCount || 0} students enrolled
+                        </p>
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <label className="prof-form-label">Invite students by email</label>
+                          <textarea
+                            className="glass-input prof-textarea"
+                            rows="3"
+                            placeholder="student1@example.edu, student2@example.edu"
+                            value={inviteInputs[course._id] || ''}
+                            onChange={(e) =>
+                              setInviteInputs((prev) => ({ ...prev, [course._id]: e.target.value }))
+                            }
+                          />
+                          <button
+                            className="btn-primary"
+                            style={{ marginTop: '8px' }}
+                            onClick={() => inviteStudents(course._id)}
+                          >
+                            Send Invites
+                          </button>
+                          {inviteStatus[course._id] && (
+                            <p style={{ marginTop: '8px', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              {inviteStatus[course._id]}
+                            </p>
+                          )}
+
+                          <div className="prof-rubric-item-actions" style={{ marginTop: '12px' }}>
+                            <button
+                              className="prof-btn-small prof-btn-danger"
+                              onClick={() => deleteCourse(course)}
+                              disabled={courseDeleteStatus[course._id] === 'Deleting...'}
+                              title="Delete course"
+                            >
+                              <Trash2 size={14} style={{ marginRight: 6 }} />
+                              Delete
+                            </button>
+                            {courseDeleteStatus[course._id] && (
+                              <span style={{ fontSize: '0.85rem', color: 'var(--muted)', alignSelf: 'center' }}>
+                                {courseDeleteStatus[course._id]}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
+              <h2 className="text-xl font-bold mb-2">Assignments</h2>
+              <p style={{ color: 'var(--muted)', marginBottom: '1rem' }}>
+                Create assignments for the active course and track submissions.
+              </p>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Assignment title</label>
+                  <input
+                    className="glass-input"
+                    placeholder="Assignment title"
+                    value={assignmentForm.title}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, title: e.target.value })}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Deadline</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                    <input
+                      className="glass-input"
+                      type="date"
+                      value={assignmentForm.deadlineDate}
+                      onChange={(e) =>
+                        setAssignmentForm((prev) => ({
+                          ...prev,
+                          deadlineDate: e.target.value,
+                          // If the browser time picker is finicky, default to end-of-day.
+                          deadlineTime: prev.deadlineTime || '23:59',
+                        }))
+                      }
+                    />
+                    <input
+                      className="glass-input"
+                      type="time"
+                      step="60"
+                      value={assignmentForm.deadlineTime}
+                      onChange={(e) => setAssignmentForm({ ...assignmentForm, deadlineTime: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <label style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Max points</label>
+                  <input
+                    className="glass-input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={assignmentForm.maxPoints}
+                    onChange={(e) => setAssignmentForm({ ...assignmentForm, maxPoints: e.target.value })}
+                  />
+                </div>
+              </div>
+              <textarea
+                className="glass-input"
+                rows="3"
+                style={{ marginTop: '1rem', width: '100%' }}
+                placeholder="Assignment description"
+                value={assignmentForm.description}
+                onChange={(e) => setAssignmentForm({ ...assignmentForm, description: e.target.value })}
+              />
+              <textarea
+                className="glass-input"
+                rows="2"
+                style={{ marginTop: '1rem', width: '100%' }}
+                placeholder="Evaluation rubric"
+                value={assignmentForm.rubric}
+                onChange={(e) => setAssignmentForm({ ...assignmentForm, rubric: e.target.value })}
+              />
+              <div style={{ marginTop: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '0.35rem' }}>
+                  Assignment files (optional)
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  className="glass-input"
+                  style={{ width: '100%' }}
+                  onChange={(e) =>
+                    setAssignmentForm({ ...assignmentForm, files: Array.from(e.target.files || []) })
+                  }
+                />
+                {Array.isArray(assignmentForm.files) && assignmentForm.files.length > 0 && (
+                  <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
+                    {assignmentForm.files.length} file(s) selected
+                  </p>
+                )}
+              </div>
+              <button className="btn-primary" style={{ marginTop: '1rem' }} onClick={createAssignment}>
+                Create Assignment
+              </button>
+              {assignmentMessage && (
+                <p style={{ marginTop: '0.75rem', color: 'var(--muted)' }}>{assignmentMessage}</p>
+              )}
+
+              <div style={{ marginTop: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-lg font-semibold">Assignment List</h3>
+                  <button className="btn-secondary" onClick={fetchAssignments}>Refresh</button>
+                </div>
+                {assignmentsLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading assignments...</p>
+                ) : assignments.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No assignments created yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {assignments.map((assignment) => (
+                      <div key={assignment._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem' }}>
+                          <div>
+                            <h4 className="font-semibold">{assignment.title}</h4>
+                            <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              Due {new Date(assignment.deadline).toLocaleString()}
+                            </p>
+                            {Number.isFinite(Number(assignment.maxPoints)) ? (
+                              <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                                Max points: {Number(assignment.maxPoints)}
+                              </p>
+                            ) : null}
+                          </div>
+                          <span style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '999px', background: 'rgba(10, 132, 255, 0.12)', color: 'var(--primary)' }}>
+                            {assignment.course?.courseCode || 'Course'}
+                          </span>
+                        </div>
+                        {assignment.description && (
+                          <p style={{ color: 'var(--muted)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
+                            {assignment.description}
+                          </p>
+                        )}
+                        {Array.isArray(assignment.attachments) && assignment.attachments.length > 0 && (
+                          <div style={{ marginTop: '0.75rem' }}>
+                            <p className="text-sm font-semibold">Attachments</p>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
+                              {assignment.attachments.map((file) => (
+                                <a
+                                  key={file.url}
+                                  href={`${API_BASE}${file.url}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                >
+                                  {file.originalName || file.filename}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <button
+                            className="btn-secondary"
+                            onClick={() => {
+                              const next = expandedAssignmentId === assignment._id ? '' : assignment._id;
+                              setExpandedAssignmentId(next);
+                              if (next) fetchAssignmentSubmissions(assignment._id);
+                            }}
+                          >
+                            {expandedAssignmentId === assignment._id ? 'Hide Submissions' : 'View Submissions'}
+                          </button>
+                        </div>
+                        {expandedAssignmentId === assignment._id && (
+                          <div style={{ marginTop: '0.75rem' }}>
+                            {assignmentSubmissionsLoading[assignment._id] ? (
+                              <p style={{ color: 'var(--muted)' }}>Loading submissions...</p>
+                            ) : (assignmentSubmissions[assignment._id] || []).length === 0 ? (
+                              <p style={{ color: 'var(--muted)' }}>No submissions yet.</p>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                {(assignmentSubmissions[assignment._id] || []).map((submission) => (
+                                  <div key={submission._id} style={{ padding: '0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                                      <strong>{submission.student?.name || 'Student'} · v{submission.version}</strong>
+                                      <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                                        {new Date(submission.submittedAt).toLocaleString()} {submission.isLate ? '• Late' : ''}
+                                      </span>
+                                    </div>
+                                    {submission.files?.length > 0 && (
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                        {submission.files.map((file) => (
+                                          <a
+                                            key={file.url}
+                                            href={`${API_BASE}${file.url}`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            style={{ fontSize: '0.8rem', color: 'var(--primary)' }}
+                                          >
+                                            {file.originalName || file.filename}
+                                          </a>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+                                      <input
+                                        type="number"
+                                        className="glass-input"
+                                        placeholder={Number.isFinite(Number(assignment.maxPoints)) ? `Score (0-${Number(assignment.maxPoints)})` : 'Score'}
+                                        value={gradeInputs[submission._id]?.score ?? submission.score ?? ''}
+                                        onChange={(e) =>
+                                          setGradeInputs((prev) => ({
+                                            ...prev,
+                                            [submission._id]: { ...prev[submission._id], score: e.target.value },
+                                          }))
+                                        }
+                                      />
+                                      <input
+                                        type="text"
+                                        className="glass-input"
+                                        placeholder="Feedback"
+                                        value={gradeInputs[submission._id]?.feedback ?? submission.feedback ?? ''}
+                                        onChange={(e) =>
+                                          setGradeInputs((prev) => ({
+                                            ...prev,
+                                            [submission._id]: { ...prev[submission._id], feedback: e.target.value },
+                                          }))
+                                        }
+                                      />
+                                    </div>
+                                    <button
+                                      className="btn-primary"
+                                      style={{ marginTop: '0.5rem' }}
+                                      onClick={() => saveSubmissionGrade(assignment._id, submission._id)}
+                                    >
+                                      Save Grade
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="glass-panel" style={{ marginTop: '1.5rem' }}>
+              <h2 className="text-xl font-bold mb-2">Practice Tests</h2>
+              <p style={{ color: 'var(--muted)', marginBottom: '1rem' }}>
+                Create course-specific practice tests and review student attempts.
+              </p>
+
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  const next = !showPracticeStats;
+                  setShowPracticeStats(next);
+                  if (next && !practiceLeaderboardTestId && Array.isArray(practiceTests) && practiceTests.length > 0) {
+                    setPracticeLeaderboardTestId(practiceTests[0]._id);
+                  }
+                  if (!next) {
+                    setPracticeLeaderboardTestId('');
+                  }
+                }}
+              >
+                View performance statistics
+              </button>
+
+              {showPracticeStats && (
+                <div style={{ marginTop: '1rem', padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <h3 className="text-lg font-semibold">Analytics</h3>
+                    <button className="btn-secondary" onClick={fetchPracticeResults}>
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', marginBottom: '0.75rem' }}>
+                    <select
+                      className="glass-input"
+                      value={practiceLeaderboardTestId}
+                      onChange={(e) => {
+                        const nextTestId = e.target.value;
+                        setPracticeLeaderboardTestId(nextTestId);
+                      }}
+                    >
+                      <option value="">Select a quiz</option>
+                      {practiceTests.map((t) => (
+                        <option key={t._id} value={t._id}>
+                          {t.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {!practiceLeaderboardTestId ? (
+                    <p style={{ color: 'var(--muted)' }}>Select a quiz to view analytics.</p>
+                  ) : practiceResultsLoading ? (
+                    <p style={{ color: 'var(--muted)' }}>Loading recent attempts...</p>
+                  ) : (() => {
+                    const selectedAttempts = practiceResults.filter(
+                      (attempt) => String(attempt?.test?._id) === String(practiceLeaderboardTestId)
+                    );
+                    const analytics = getPracticeAnalytics(selectedAttempts);
+
+                    if (selectedAttempts.length === 0) {
+                      return <p style={{ color: 'var(--muted)' }}>No attempts yet for this quiz.</p>;
+                    }
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+                          {[
+                            { label: 'Attempts', value: analytics.totalAttempts },
+                            { label: 'Average score', value: `${analytics.averageScore}%` },
+                            { label: 'Best score', value: `${analytics.bestScore}%` },
+                            { label: 'Pass rate', value: `${analytics.passRate}%` },
+                            { label: 'Avg. time', value: analytics.averageTime ? `${analytics.averageTime}s` : '0s' },
+                          ].map((item) => (
+                            <div
+                              key={item.label}
+                              style={{
+                                padding: '0.9rem',
+                                borderRadius: '12px',
+                                border: '1px solid var(--border)',
+                                background: 'rgba(255, 255, 255, 0.03)',
+                              }}
+                            >
+                              <div style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: '0.35rem' }}>{item.label}</div>
+                              <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{item.value}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+                          <div style={{ padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.03)' }}>
+                            <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Score trend</h4>
+                            {analytics.recentTrend.length === 0 ? (
+                              <p style={{ color: 'var(--muted)' }}>No score trend available.</p>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={220}>
+                                <LineChart data={analytics.recentTrend}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                                  <XAxis dataKey="label" stroke="var(--muted)" />
+                                  <YAxis domain={[0, 100]} stroke="var(--muted)" />
+                                  <Tooltip
+                                    content={({ active, payload }) => {
+                                      if (!active || !payload || payload.length === 0) return null;
+                                      const point = payload[0]?.payload || {};
+                                      const name = point.studentName || 'Student';
+                                      const email = point.studentEmail || '';
+                                      const score = Number(point.score);
+                                      const date = point.date || '';
+
+                                      return (
+                                        <div
+                                          style={{
+                                            background: 'rgba(26, 26, 46, 0.95)',
+                                            border: '1px solid var(--border)',
+                                            borderRadius: '10px',
+                                            padding: '0.6rem 0.75rem',
+                                            color: 'var(--text-main)',
+                                            minWidth: 220,
+                                          }}
+                                        >
+                                          <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>{name}</div>
+                                          {email ? (
+                                            <div style={{ color: 'var(--muted)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>{email}</div>
+                                          ) : null}
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+                                            <span style={{ color: 'var(--muted)' }}>Score</span>
+                                            <span style={{ fontWeight: 700 }}>{Number.isFinite(score) ? `${score}%` : '—'}</span>
+                                          </div>
+                                          {date ? (
+                                            <div style={{ marginTop: '0.25rem', color: 'var(--muted)', fontSize: '0.8rem' }}>{date}</div>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    }}
+                                  />
+                                  <Line type="monotone" dataKey="score" stroke="#4F8CFF" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            )}
+                          </div>
+
+                          <div style={{ padding: '1rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'rgba(255, 255, 255, 0.03)' }}>
+                            <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Common weak areas</h4>
+                            {analytics.weakAreas.length === 0 ? (
+                              <p style={{ color: 'var(--muted)' }}>No weak areas recorded yet.</p>
+                            ) : (
+                              <ResponsiveContainer width="100%" height={220}>
+                                <BarChart data={analytics.weakAreas} layout="vertical">
+                                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+                                  <XAxis type="number" allowDecimals={false} stroke="var(--muted)" />
+                                  <YAxis dataKey="area" type="category" width={120} stroke="var(--muted)" />
+                                  <Tooltip />
+                                  <Bar dataKey="count" fill="#FFB347" radius={[0, 8, 8, 0]} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Recent attempts</h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            {analytics.recentAttempts.map((attempt) => (
+                              <div
+                                key={attempt.attemptId}
+                                style={{
+                                  padding: '0.9rem',
+                                  borderRadius: '12px',
+                                  border: '1px solid var(--border)',
+                                  background: 'rgba(255, 255, 255, 0.03)',
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                                  <div>
+                                    <strong>{attempt.student?.name || attempt.student?.email || 'Student'}</strong>
+                                    {attempt.student?.email ? <span style={{ color: 'var(--muted)' }}> · {attempt.student.email}</span> : null}
+                                    <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                                      Score: {attempt.score}%
+                                      {attempt.createdAt ? ` • ${new Date(attempt.createdAt).toLocaleString()}` : ''}
+                                    </div>
+                                  </div>
+                                  <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                                    Weak areas: {Array.isArray(attempt.weakAreas) && attempt.weakAreas.length > 0 ? attempt.weakAreas.join(', ') : '—'}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <input
+                  className="glass-input"
+                  type="number"
+                  min="1"
+                  max="25"
+                  placeholder="AI question count (1-25)"
+                  value={practiceGenerate.count}
+                  onChange={(e) => setPracticeGenerate((prev) => ({ ...prev, count: e.target.value }))}
+                />
+                <input
+                  className="glass-input"
+                  placeholder="AI instructions (optional)"
+                  value={practiceGenerate.instructions}
+                  onChange={(e) => setPracticeGenerate((prev) => ({ ...prev, instructions: e.target.value }))}
+                />
+              </div>
+
+              <button
+                className="btn-secondary"
+                style={{ marginTop: '1rem', opacity: practiceGenerating ? 0.7 : 1 }}
+                onClick={generatePracticeQuestionsWithAi}
+                disabled={practiceGenerating}
+              >
+                {practiceGenerating ? 'Generating...' : 'Generate with AI'}
+              </button>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                <input
+                  className="glass-input"
+                  placeholder="Test title"
+                  value={practiceTestForm.title}
+                  onChange={(e) => setPracticeTestForm({ ...practiceTestForm, title: e.target.value })}
+                />
+                <select
+                  className="glass-input"
+                  value={practiceTestForm.difficulty}
+                  onChange={(e) => setPracticeTestForm({ ...practiceTestForm, difficulty: e.target.value })}
+                >
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </div>
+
+              <input
+                className="glass-input"
+                style={{ marginTop: '1rem', width: '100%' }}
+                placeholder="Syllabus topics (comma-separated)"
+                value={practiceTestForm.topics}
+                onChange={(e) => setPracticeTestForm({ ...practiceTestForm, topics: e.target.value })}
+              />
+
+              <div style={{ marginTop: '1rem' }}>
+                {practiceQuestions.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>
+                    No questions loaded yet. Click “Generate with AI” to create questions.
+                  </p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceQuestions.map((q, qi) => (
+                      <div
+                        key={qi}
+                        className="glass-card"
+                        style={{ padding: '1rem', borderRadius: '12px' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center' }}>
+                          <h4 className="font-semibold">Question {qi + 1}</h4>
+                          <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                            Correct: {Number.isInteger(Number(q?.correctAnswer)) ? Number(q.correctAnswer) + 1 : '—'}
+                          </span>
+                        </div>
+
+                        <input
+                          className="glass-input"
+                          style={{ marginTop: '0.75rem', width: '100%' }}
+                          placeholder="Question text"
+                          value={q?.questionText || ''}
+                          onChange={(e) => updatePracticeQuestion(qi, { questionText: e.target.value })}
+                        />
+
+                        <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          {(Array.isArray(q?.options) ? q.options : []).map((opt, oi) => (
+                            <div key={oi} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                              <input
+                                type="radio"
+                                name={`correct-${qi}`}
+                                checked={Number(q?.correctAnswer) === oi}
+                                onChange={() => updatePracticeQuestion(qi, { correctAnswer: oi })}
+                              />
+                              <input
+                                className="glass-input"
+                                style={{ width: '100%' }}
+                                placeholder={`Option ${oi + 1}`}
+                                value={opt}
+                                onChange={(e) => updatePracticeOption(qi, oi, e.target.value)}
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
+                          <input
+                            className="glass-input"
+                            placeholder="Topic (optional)"
+                            value={q?.topic || ''}
+                            onChange={(e) => updatePracticeQuestion(qi, { topic: e.target.value })}
+                          />
+                          <select
+                            className="glass-input"
+                            value={Number.isInteger(Number(q?.correctAnswer)) ? String(Number(q.correctAnswer)) : ''}
+                            onChange={(e) => updatePracticeQuestion(qi, { correctAnswer: Number(e.target.value) })}
+                          >
+                            <option value="">Correct answer</option>
+                            {(Array.isArray(q?.options) ? q.options : []).map((opt, oi) => (
+                              <option key={oi} value={String(oi)}>
+                                Option {oi + 1}{opt ? `: ${String(opt).slice(0, 60)}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <textarea
+                          className="glass-input"
+                          rows="3"
+                          style={{ marginTop: '0.75rem', width: '100%' }}
+                          placeholder="Explanation (optional)"
+                          value={q?.explanation || ''}
+                          onChange={(e) => updatePracticeQuestion(qi, { explanation: e.target.value })}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button className="btn-primary" style={{ marginTop: '1rem' }} onClick={createPracticeTest}>
+                Create Practice Test
+              </button>
+
+              {practiceTestMessage && (
+                <p style={{ marginTop: '0.75rem', color: 'var(--muted)' }}>{practiceTestMessage}</p>
+              )}
+
+              {practiceStatusNotice?.text && (
+                <div
+                  style={{
+                    marginTop: '0.75rem',
+                    padding: '0.7rem 0.9rem',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border)',
+                    background:
+                      practiceStatusNotice.type === 'success'
+                        ? 'rgba(52, 199, 89, 0.14)'
+                        : 'rgba(255, 59, 48, 0.14)',
+                    color: practiceStatusNotice.type === 'success' ? '#6DFFB2' : '#FF9E96',
+                    fontWeight: 600,
+                  }}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {practiceStatusNotice.text}
+                </div>
+              )}
+
+              <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-lg font-semibold">Tests</h3>
+                  <button className="btn-secondary" onClick={fetchPracticeTests}>Refresh</button>
+                </div>
+                {practiceTestsLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading tests...</p>
+                ) : practiceTests.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No practice tests yet for this course.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceTests.map((t) => (
+                      <div key={t._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'start' }}>
+                          <div>
+                            <h4 className="font-semibold">{t.title}</h4>
+                            <p style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                              {t.difficulty} • {t.questionCount} questions
+                            </p>
+                            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                              <span
+                                style={{
+                                  fontSize: '0.75rem',
+                                  padding: '0.25rem 0.55rem',
+                                  borderRadius: '999px',
+                                  border: '1px solid var(--border)',
+                                  background: t.isActive === false ? 'rgba(255, 59, 48, 0.12)' : 'rgba(52, 199, 89, 0.12)',
+                                  color: t.isActive === false ? '#FF3B30' : '#34C759',
+                                }}
+                              >
+                                {t.isActive === false ? 'Inactive' : 'Active'}
+                              </span>
+
+                              <button
+                                className={t.isActive === false ? 'btn-primary' : 'btn-secondary'}
+                                disabled={Boolean(practiceStatusUpdating[t._id])}
+                                onClick={() => setPracticeTestActive(t, t.isActive === false)}
+                                title={t.isActive === false ? 'Make this test available to students' : 'Prevent students from taking this test'}
+                              >
+                                {practiceStatusUpdating[t._id]
+                                  ? 'Updating...'
+                                  : t.isActive === false
+                                    ? 'Set Active'
+                                    : 'Set Inactive'}
+                              </button>
+                            </div>
+                            {Array.isArray(t.topics) && t.topics.length > 0 && (
+                              <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.35rem' }}>
+                                Topics: {t.topics.join(', ')}
+                              </p>
+                            )}
+
+                            <div style={{ marginTop: '0.75rem' }}>
+                              <button
+                                className="btn-secondary"
+                                type="button"
+                                aria-label={`View analytics for ${t.title}`}
+                                onClick={() => openPracticeAnalytics(t)}
+                              >
+                                View analytics
+                              </button>
+                            </div>
+                          </div>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                            {t.createdAt ? new Date(t.createdAt).toLocaleString() : ''}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <h3 className="text-lg font-semibold">Recent Attempts</h3>
+                  <button className="btn-secondary" onClick={fetchPracticeResults}>Refresh</button>
+                </div>
+
+                {practiceResultsLoading ? (
+                  <p style={{ color: 'var(--muted)' }}>Loading attempts...</p>
+                ) : practiceResults.length === 0 ? (
+                  <p style={{ color: 'var(--muted)' }}>No attempts yet.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {practiceResults.slice(0, 12).map((r) => (
+                      <div key={r.attemptId} style={{ padding: '0.9rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                          <div>
+                            <strong>{r.student?.name || r.student?.email || 'Student'}</strong>
+                            {r.student?.email ? <span style={{ color: 'var(--muted)' }}> · {r.student.email}</span> : null}
+                            <div style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+                              {r.test?.title || 'Test'} • Score: {r.score}%
+                              {r.createdAt ? ` • ${new Date(r.createdAt).toLocaleString()}` : ''}
+                            </div>
+                          </div>
+                          {Array.isArray(r.weakAreas) && r.weakAreas.length > 0 ? (
+                            <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>
+                              Weak areas: {r.weakAreas.join(', ')}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '0.85rem', color: 'var(--muted)' }}>Weak areas: —</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         ) : activeTab === 'evaluations' ? (
           <div>
             {!selectedEvaluation ? (
@@ -1017,6 +2692,10 @@ const ProfessorDashboard = () => {
                 <EvaluationReviewer feedbackId={selectedEvaluation} />
               </div>
             )}
+          </div>
+        ) : activeTab === 'batch_evals' ? (
+          <div>
+            <SummaryEvaluation />
           </div>
         ) : activeTab === 'guide' ? (
           <div className="prof-guide-section">
