@@ -168,6 +168,28 @@ a:hover {
   opacity: 0.7;
 }
 
+/* Hide native calendar/time picker icon for a cleaner UI */
+.glass-input[type="date"],
+.glass-input[type="time"] {
+  -webkit-appearance: none;
+  -moz-appearance: textfield;
+  appearance: none;
+  background-image: none;
+}
+
+/* Chrome/Safari */
+.glass-input[type="date"]::-webkit-calendar-picker-indicator,
+.glass-input[type="time"]::-webkit-calendar-picker-indicator {
+  display: none;
+  -webkit-appearance: none;
+}
+
+/* Firefox */
+.glass-input[type="date"]::-moz-calendar-picker-indicator,
+.glass-input[type="time"]::-moz-calendar-picker-indicator {
+  display: none;
+}
+
 /* Futuristic Glowing Buttons */
 .btn-primary {
   background: linear-gradient(135deg, var(--primary), var(--secondary));

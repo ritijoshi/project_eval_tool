@@ -24,6 +24,7 @@ import {
 import axios from 'axios';
 import Chatbot from '../components/Chatbot';
 import FeedbackViewer from '../components/FeedbackViewer';
+import StudentAssignmentsPanel from '../components/StudentAssignmentsPanel';
 import { API_BASE } from '../config/api';
 
 const StudentDashboard = () => {
@@ -258,6 +259,14 @@ const StudentDashboard = () => {
           >
             <MessageSquare size={20} />
             <span className="font-medium">My Feedback</span>
+          </button>
+          <button
+            className={`flex items-center gap-4 w-full ${activeTab === 'assignments' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
+            style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
+            onClick={() => setActiveTab('assignments')}
+          >
+            <FileText size={20} />
+            <span className="font-medium">Assignments</span>
           </button>
         </div>
 
@@ -1063,6 +1072,8 @@ const StudentDashboard = () => {
             )}
           </div>
         )}
+
+        {activeTab === 'assignments' && <StudentAssignmentsPanel />}
       </div>
     </div>
   );

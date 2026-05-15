@@ -6,6 +6,7 @@ import axios from 'axios';
 import ProfessorMaterialsUploader from '../components/ProfessorMaterialsUploader';
 import QuickGuide from '../components/QuickGuide';
 import EvaluationReviewer from '../components/EvaluationReviewer';
+import ProfessorAssignmentsPanel from '../components/ProfessorAssignmentsPanel';
 import { API_BASE } from '../config/api';
 
 const ProfessorDashboard = () => {
@@ -248,6 +249,13 @@ const ProfessorDashboard = () => {
               <BarChart3 size={18} />
               <span>Student Evaluations</span>
             </button>
+            <button
+              className={`prof-nav-btn ${activeTab === 'assignments' ? 'is-active' : ''}`}
+              onClick={() => setActiveTab('assignments')}
+            >
+              <Book size={18} />
+              <span>Assignments</span>
+            </button>
           </nav>
 
           <div className="prof-sidebar-footer">
@@ -367,6 +375,14 @@ const ProfessorDashboard = () => {
           >
             <HelpCircle size={16} />
             Quick Guide
+          </button>
+          <button
+            type="button"
+            className={`prof-tab ${activeTab === 'assignments' ? 'is-active' : ''}`}
+            onClick={() => setActiveTab('assignments')}
+          >
+            <Book size={16} />
+            Assignments
           </button>
         </div>
 
@@ -1006,6 +1022,8 @@ const ProfessorDashboard = () => {
           <div className="prof-guide-section">
             <QuickGuide role="professor" />
           </div>
+        ) : activeTab === 'assignments' ? (
+          <ProfessorAssignmentsPanel />
         ) : (
           <ProfessorMaterialsUploader />
         )}

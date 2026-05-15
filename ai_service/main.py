@@ -1,6 +1,3 @@
-from dotenv import load_dotenv
-from pathlib import Path
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 import os
 import shutil
 import json
@@ -37,7 +34,6 @@ async def health_check():
 async def readiness_check():
     openai_key = os.environ.get("OPENAI_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
-    print(f"DEBUG GROQ KEY: '{groq_key}'")  
     return {
         "status": "ready",
         "dependencies": {
@@ -48,7 +44,11 @@ async def readiness_check():
         },
     }
 
-
+if not os.environ.get("OPENAI_API_KEY"):
+    # In production, load from .env or real environment variables
+    os.environ["OPENAI_API_KEY"] = "sk-placeholder"
+if not os.environ.get("GROQ_API_KEY"):
+    os.environ["GROQ_API_KEY"] = "gsk-placeholder"
 FAISS_INDEX_PATH = "faiss_index"
 
 COURSE_FAISS_ROOT = "course_faiss_indexes"
@@ -98,6 +98,25 @@ class EvalResponse(BaseModel):
     explanation: str
     criterion_breakdown: List[CriterionResult] = []
 
+class AssignmentEvalRequest(BaseModel):
+    assignment_text: str
+    submission_text: str
+    rubric: str = ""
+
+class AssignmentEvalResponse(BaseModel):
+    total_score: int
+    max_score: int = 100
+    grade_label: str
+    is_relevant: bool
+    is_incomplete: bool
+    score_breakdown: Dict[str, int]
+    strengths: List[str]
+    mistakes: List[str]
+    missing_concepts: List[str]
+    improvement_suggestions: List[str]
+    summary: str
+    detailed_feedback: str
+
 # Robust Import Block
 VECTORS_AVAILABLE = False
 LLM_AVAILABLE = False
@@ -105,11 +124,11 @@ LLM_AVAILABLE = False
 try:
     from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_openai import OpenAIEmbeddings
     from langchain_community.vectorstores import FAISS
     from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain_core.runnables import RunnablePassthrough
-    from langchain_core.output_parsers import StrOutputParser
+    from langchain.chains.combine_documents import create_stuff_documents_chain
+    from langchain.chains import create_retrieval_chain
     from langchain_core.messages import HumanMessage, AIMessage
     from langchain_core.output_parsers import JsonOutputParser
     VECTORS_AVAILABLE = True
@@ -124,7 +143,7 @@ except ImportError as e:
 
 def get_vector_store():
     if not VECTORS_AVAILABLE: return None
-    embeddings = HuggingFaceEmbeddingsEmbeddings()
+    embeddings = OpenAIEmbeddings()
     if os.path.exists(FAISS_INDEX_PATH):
         return FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
     return None
@@ -154,7 +173,7 @@ async def upload_material(file: UploadFile = File(...)):
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = text_splitter.split_documents(documents)
         
-        embeddings = HuggingFaceEmbeddings()
+        embeddings = OpenAIEmbeddings()
         if os.path.exists(FAISS_INDEX_PATH):
             vector_store = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
             vector_store.add_documents(chunks)
@@ -238,15 +257,14 @@ async def chat_with_agent(req: ChatRequest):
             elif msg.get("sender") == "agent":
                 chat_history_messages.append(AIMessage(content=msg.get("text", "")))
 
-        rag_chain = (
-            {"context": retriever, "input": RunnablePassthrough()}
-            | prompt
-            | llm
-            | StrOutputParser()
-        )
+        question_answer_chain = create_stuff_documents_chain(llm, prompt)
+        rag_chain = create_retrieval_chain(retriever, question_answer_chain)
         
-        response = rag_chain.invoke(req.message)
-        return ChatResponse(reply=response)
+        response = rag_chain.invoke({
+            "input": req.message,
+            "chat_history": chat_history_messages
+        })
+        return ChatResponse(reply=response["answer"])
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -276,10 +294,11 @@ def normalize_course_key(course_key: str) -> str:
     s = re.sub(r"-+", "-", s).strip("-")
     return s or "default"
 
-def huggingface_embeddings_enabled() -> bool:
+def openai_embeddings_enabled() -> bool:
     if not VECTORS_AVAILABLE:
         return False
-    return True
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    return bool(openai_key) and openai_key != "sk-placeholder"
 
 def groq_llm_enabled() -> bool:
     if not LLM_AVAILABLE:
@@ -403,6 +422,63 @@ def extract_text_from_file(file_location: str, filename: str) -> str:
                 pass
             return ""
 
+    if lower.endswith((".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp")):
+        # Optional OCR support for image-based submissions/materials.
+        try:
+            import pytesseract
+            from PIL import Image
+
+            img = Image.open(file_location)
+            return str(pytesseract.image_to_string(img) or "").strip()
+        except Exception:
+            return ""
+
+    if lower.endswith(".zip"):
+        # Best-effort extraction for supported file types inside zip bundles.
+        extracted_parts = []
+        try:
+            with zipfile.ZipFile(file_location) as archive:
+                for member in archive.namelist():
+                    if member.endswith("/"):
+                        continue
+                    member_lower = member.lower()
+                    if not member_lower.endswith((
+                        ".txt", ".md", ".py", ".js", ".ts", ".java", ".c", ".cpp", ".json", ".csv",
+                        ".pdf", ".docx", ".pptx", ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"
+                    )):
+                        continue
+
+                    temp_member_path = f"{file_location}__{re.sub(r'[^a-zA-Z0-9._-]+', '_', os.path.basename(member) or 'member')}"
+                    with archive.open(member) as src, open(temp_member_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+
+                    try:
+                        content = extract_text_from_file(temp_member_path, os.path.basename(member) or member)
+                        if not content and member_lower.endswith((".txt", ".md", ".py", ".js", ".ts", ".java", ".c", ".cpp", ".json", ".csv")):
+                            with open(temp_member_path, "r", encoding="utf-8", errors="ignore") as f:
+                                content = f.read()
+
+                        if content:
+                            extracted_parts.append(f"### {member}\n{content[:20000]}")
+                    finally:
+                        try:
+                            os.remove(temp_member_path)
+                        except Exception:
+                            pass
+        except Exception:
+            return ""
+
+        return "\n\n".join(extracted_parts).strip()
+
+    if lower.endswith((
+        ".txt", ".md", ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".c", ".cpp", ".json", ".csv", ".html", ".css"
+    )):
+        try:
+            with open(file_location, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read().strip()
+        except Exception:
+            return ""
+
     if lower.endswith((".mp3", ".wav", ".m4a")):
         # Audio transcription is optional; supported when openai-whisper is installed.
         try:
@@ -434,10 +510,10 @@ def course_faiss_exists(course_key: str) -> bool:
     return os.path.exists(p) and len(os.listdir(p)) > 0
 
 def add_chunks_to_course_faiss(course_key: str, chunks: List[str], metadatas: List[Dict]) -> None:
-    if not huggingface_embeddings_enabled():
+    if not openai_embeddings_enabled():
         return
 
-    embeddings = HuggingFaceEmbeddings()
+    embeddings = OpenAIEmbeddings()
     path = course_faiss_path(course_key)
 
     if course_faiss_exists(course_key):
@@ -452,9 +528,9 @@ def retrieve_course_context(course_key: str, query: str, k: int = 4) -> List[str
     course_key = normalize_course_key(course_key)
 
     # Prefer FAISS retrieval when embeddings are enabled.
-    if huggingface_embeddings_enabled() and course_faiss_exists(course_key):
+    if openai_embeddings_enabled() and course_faiss_exists(course_key):
         try:
-            embeddings = HuggingFaceEmbeddings()
+            embeddings = OpenAIEmbeddings()
             vector_store = FAISS.load_local(course_faiss_path(course_key), embeddings, allow_dangerous_deserialization=True)
             docs = vector_store.similarity_search(query, k=k)
             return [d.page_content for d in docs if getattr(d, "page_content", None)]
@@ -607,7 +683,7 @@ def evaluate_submission_core(submission_text: str, rubric: str) -> EvalResponse:
     if not LLM_AVAILABLE or os.environ.get("GROQ_API_KEY") == "gsk-placeholder":
         return fallback_eval(criteria, submission_text)
 
-    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.0)
+    llm = ChatGroq(model_name="llama3-8b-8192", temperature=0.0)
     parser = JsonOutputParser(pydantic_object=EvalResponse)
     anchor = deterministic_anchor_score(criteria, submission_text)
 
@@ -675,6 +751,124 @@ def evaluate_submission_core(submission_text: str, rubric: str) -> EvalResponse:
         explanation=eval_obj.explanation or "Evaluation computed from rubric-weighted criterion analysis.",
         criterion_breakdown=cleaned_breakdown,
     )
+
+def build_assignment_fallback(assignment_text: str, submission_text: str) -> AssignmentEvalResponse:
+    assignment_tokens = set(tokenize_for_scoring(assignment_text))
+    submission_tokens = set(tokenize_for_scoring(submission_text))
+    overlap = len(assignment_tokens.intersection(submission_tokens))
+    submission_words = len(tokenize_for_scoring(submission_text))
+
+    relevance_ratio = (overlap / max(1, len(assignment_tokens))) if assignment_tokens else 0.0
+    is_relevant = relevance_ratio >= 0.1
+    is_incomplete = submission_words < 120
+
+    correctness = max(20, min(95, int(round(35 + relevance_ratio * 60))))
+    topic_understanding = max(20, min(95, int(round(30 + relevance_ratio * 65))))
+    completeness = max(15, min(95, int(round(min(submission_words, 600) / 6))))
+    technical_accuracy = max(20, min(95, int(round((correctness + topic_understanding) / 2))))
+
+    total = int(round((correctness + topic_understanding + completeness + technical_accuracy) / 4))
+    if not is_relevant:
+        total = min(total, 45)
+    if is_incomplete:
+        total = min(total, 55)
+
+    grade_label = "A" if total >= 90 else "B" if total >= 80 else "C" if total >= 70 else "D" if total >= 60 else "F"
+
+    return AssignmentEvalResponse(
+        total_score=total,
+        max_score=100,
+        grade_label=grade_label,
+        is_relevant=is_relevant,
+        is_incomplete=is_incomplete,
+        score_breakdown={
+            "correctness": correctness,
+            "topic_understanding": topic_understanding,
+            "completeness": completeness,
+            "technical_accuracy": technical_accuracy,
+        },
+        strengths=[
+            "Submission addresses parts of the assignment context.",
+            "Core structure is present and can be improved iteratively.",
+        ],
+        mistakes=[
+            "Some required constraints are either weakly justified or not fully implemented.",
+        ],
+        missing_concepts=[
+            "More explicit mapping between assignment requirements and submission evidence is needed.",
+        ],
+        improvement_suggestions=[
+            "Reference each assignment requirement and show where your solution satisfies it.",
+            "Expand technical details and edge-case handling.",
+        ],
+        summary="Fallback semantic estimate generated because full LLM evaluation is unavailable.",
+        detailed_feedback="The submission was evaluated using deterministic semantic overlap and completeness heuristics. Configure Groq for richer criterion-level reasoning.",
+    )
+
+def evaluate_assignment_core(assignment_text: str, submission_text: str, rubric: str = "") -> AssignmentEvalResponse:
+    if not groq_llm_enabled():
+        return build_assignment_fallback(assignment_text, submission_text)
+
+    llm = ChatGroq(model_name="llama3-8b-8192", temperature=0.0)
+    parser = JsonOutputParser(pydantic_object=AssignmentEvalResponse)
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            (
+                "You are a strict but fair professor evaluating assignment submissions semantically.\n"
+                "Evaluate if the submission is relevant, complete, conceptually correct, and technically accurate.\n"
+                "Use assignment context and rubric. Avoid keyword-only judgments.\n"
+                "Return ONLY JSON using this schema:\n{format_instructions}\n"
+            ),
+        ),
+        (
+            "human",
+            (
+                "Assignment question/material:\n{assignment_text}\n\n"
+                "Rubric:\n{rubric}\n\n"
+                "Student submission:\n{submission_text}\n\n"
+                "Rules:\n"
+                "1) total_score must be 0-100 integer.\n"
+                "2) Fill score_breakdown with: correctness, topic_understanding, completeness, technical_accuracy.\n"
+                "3) Flag is_relevant and is_incomplete accurately.\n"
+                "4) Provide detailed, actionable feedback and missing concepts."
+            ),
+        ),
+    ])
+
+    chain = prompt | llm | parser
+    result = chain.invoke({
+        "assignment_text": assignment_text,
+        "submission_text": submission_text,
+        "rubric": rubric or "No explicit rubric provided",
+        "format_instructions": parser.get_format_instructions(),
+    })
+
+    # Validate and coerce values to keep downstream processing stable.
+    total_score = coerce_score_0_100(result.get("total_score", 0), default=0)
+    breakdown = result.get("score_breakdown", {}) or {}
+
+    normalized = AssignmentEvalResponse(
+        total_score=total_score,
+        max_score=100,
+        grade_label=str(result.get("grade_label") or ("A" if total_score >= 90 else "B" if total_score >= 80 else "C" if total_score >= 70 else "D" if total_score >= 60 else "F")),
+        is_relevant=bool(result.get("is_relevant", True)),
+        is_incomplete=bool(result.get("is_incomplete", False)),
+        score_breakdown={
+            "correctness": coerce_score_0_100(breakdown.get("correctness", total_score), default=total_score),
+            "topic_understanding": coerce_score_0_100(breakdown.get("topic_understanding", total_score), default=total_score),
+            "completeness": coerce_score_0_100(breakdown.get("completeness", total_score), default=total_score),
+            "technical_accuracy": coerce_score_0_100(breakdown.get("technical_accuracy", total_score), default=total_score),
+        },
+        strengths=result.get("strengths") or [],
+        mistakes=result.get("mistakes") or [],
+        missing_concepts=result.get("missing_concepts") or [],
+        improvement_suggestions=result.get("improvement_suggestions") or [],
+        summary=str(result.get("summary") or ""),
+        detailed_feedback=str(result.get("detailed_feedback") or ""),
+    )
+
+    return normalized
 
 @app.post("/course/upload")
 async def upload_course_materials(
@@ -744,7 +938,7 @@ async def upload_course_materials(
         "course_key": course_key,
         "processed_files": processed_files,
         "chunks_added": total_chunks,
-        "faiss_enabled": huggingface_embeddings_enabled(),
+        "faiss_enabled": openai_embeddings_enabled(),
     }
 
 @app.get("/course/list")
@@ -806,7 +1000,7 @@ async def ingest_weekly_update(req: WeeklyUpdateRequest):
         "message": "Weekly update ingested successfully.",
         "course_key": course_key,
         "chunks_added": len(chunks),
-        "faiss_enabled": huggingface_embeddings_enabled(),
+        "faiss_enabled": openai_embeddings_enabled(),
     }
 
 @app.post("/course/chat", response_model=ChatResponse)
@@ -874,8 +1068,8 @@ async def course_chat(req: CourseChatRequest):
 
     # Real RAG + LLM mode.
     retriever = None
-    if huggingface_embeddings_enabled() and course_faiss_exists(course_key):
-        embeddings = HuggingFaceEmbeddings()
+    if openai_embeddings_enabled() and course_faiss_exists(course_key):
+        embeddings = OpenAIEmbeddings()
         vector_store = FAISS.load_local(course_faiss_path(course_key), embeddings, allow_dangerous_deserialization=True)
         retriever = vector_store.as_retriever(search_kwargs={"k": 4})
 
@@ -900,16 +1094,15 @@ async def course_chat(req: CourseChatRequest):
         ("human", "{input}"),
     ])
 
-    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.7)
+    llm = ChatGroq(model_name="llama3-8b-8192", temperature=0.7)
 
     # Generate LangChain memory messages (if any).
     chat_history_messages = []
     for msg in req.history or []:
-        if VECTORS_AVAILABLE:
-            if msg.get("sender") == "user":
-                chat_history_messages.append(HumanMessage(content=msg.get("text", "")))
-            elif msg.get("sender") == "agent":
-                chat_history_messages.append(AIMessage(content=msg.get("text", "")))
+        if msg.get("sender") == "user":
+            chat_history_messages.append(HumanMessage(content=msg.get("text", "")))
+        elif msg.get("sender") == "agent":
+            chat_history_messages.append(AIMessage(content=msg.get("text", "")))
 
     if not retriever:
         # Embeddings are disabled; fall back to stuffing the retrieved context directly.
@@ -923,19 +1116,15 @@ async def course_chat(req: CourseChatRequest):
             )
         )
 
-    rag_chain = (
-        {
-            "context": retriever, 
-            "input": RunnablePassthrough(),
-            "chat_history": lambda _: chat_history_messages
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
 
-    response = rag_chain.invoke(req.message)
-    return ChatResponse(reply=response)
+    response = rag_chain.invoke({
+        "input": req.message,
+        "chat_history": chat_history_messages,
+    })
+
+    return ChatResponse(reply=response.get("answer", ""))
 
 @app.post("/personalize", response_model=PersonalizeResponse)
 async def generate_personalization(req: PersonalizeRequest):
@@ -951,7 +1140,7 @@ async def generate_personalization(req: PersonalizeRequest):
             adaptive_message=f"Agent Notice: Based on your recent quizzes averaging {sum(req.quiz_scores.values())/max(len(req.quiz_scores), 1)}%, let's focus on foundational concepts before moving fast."
         )
 
-    llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0.7)
+    llm = ChatGroq(model_name="llama3-8b-8192", temperature=0.7)
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", (
@@ -1011,6 +1200,54 @@ async def evaluate_submission(req: EvalRequest):
         return evaluate_submission_core(req.submission_text, req.rubric)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM parsing failed: {str(e)}")
+
+@app.post("/extract/files")
+async def extract_files_text(files: List[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    temp_dir = "temp_extract_upload"
+    os.makedirs(temp_dir, exist_ok=True)
+    parts = []
+
+    try:
+        for uploaded in files:
+            filename = uploaded.filename or "uploaded-file"
+            safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename)
+            file_location = os.path.join(temp_dir, safe_name)
+
+            with open(file_location, "wb") as buffer:
+                shutil.copyfileobj(uploaded.file, buffer)
+
+            text = extract_text_from_file(file_location, filename)
+            if text:
+                parts.append(f"### File: {filename}\n{text[:25000]}")
+
+        return {
+            "file_count": len(files),
+            "extracted_text": "\n\n".join(parts).strip(),
+        }
+    finally:
+        try:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+@app.post("/assignment/evaluate", response_model=AssignmentEvalResponse)
+async def evaluate_assignment_submission(req: AssignmentEvalRequest):
+    assignment_text = str(req.assignment_text or "").strip()
+    submission_text = str(req.submission_text or "").strip()
+
+    if not assignment_text:
+        raise HTTPException(status_code=400, detail="assignment_text is required")
+    if not submission_text:
+        raise HTTPException(status_code=400, detail="submission_text is required")
+
+    try:
+        return evaluate_assignment_core(assignment_text, submission_text, req.rubric)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Assignment evaluation failed: {str(e)}")
 
 @app.post("/evaluate/files", response_model=EvalResponse)
 async def evaluate_submission_files(

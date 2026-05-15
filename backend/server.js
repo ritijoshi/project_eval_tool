@@ -93,6 +93,7 @@ app.use('/api/student', require('./routes/student'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/assignments', require('./routes/assignments'));
 
 app.use(notFoundHandler);
 app.use(errorHandler);
