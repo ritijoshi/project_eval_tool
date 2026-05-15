@@ -14,8 +14,6 @@ const { handleChat, getSavedChatHistory, deleteSavedChatHistory } = require('../
 const { protect, isStudent } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const assignmentController = require('../controllers/assignmentController');
-const path = require('path');
-const fs = require('fs');
 
 const upload = multer({
 	storage: multer.memoryStorage(),
@@ -25,26 +23,8 @@ const upload = multer({
 	},
 });
 
-const ensureUploadsDir = (dirPath) => {
-	if (!fs.existsSync(dirPath)) {
-		fs.mkdirSync(dirPath, { recursive: true });
-	}
-};
-
-const submissionStorage = multer.diskStorage({
-	destination: (req, file, cb) => {
-		const dest = path.join(__dirname, '..', 'uploads', 'submissions');
-		ensureUploadsDir(dest);
-		cb(null, dest);
-	},
-	filename: (req, file, cb) => {
-		const safeName = `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]+/g, '-')}`;
-		cb(null, safeName);
-	},
-});
-
 const submissionUpload = multer({
-	storage: submissionStorage,
+	storage: multer.memoryStorage(),
 	limits: {
 		fileSize: 25 * 1024 * 1024,
 		files: 10,
@@ -70,10 +50,10 @@ router.get('/rubric', protect, isStudent, getActiveRubricForCourse);
 router.get('/courses', protect, isStudent, listCourses);
 router.post('/courses/join', protect, isStudent, joinCourse);
 router.post('/courses/:courseId/unenroll', protect, isStudent, unenrollCourse);
-router.get('/assignments', protect, isStudent, assignmentController.listAssignmentsForStudent);
-router.get('/assignments/upcoming', protect, isStudent, assignmentController.listUpcomingAssignments);
+router.get('/assignments', protect, isStudent, assignmentController.getStudentAssignments);
+router.get('/assignments/upcoming', protect, isStudent, assignmentController.getStudentAssignments);
 router.post('/assignments/:assignmentId/submissions', protect, isStudent, submissionUpload.array('files', 10), assignmentController.submitAssignment);
-router.get('/assignments/:assignmentId/submissions', protect, isStudent, assignmentController.listMySubmissions);
+router.get('/assignments/:assignmentId/submissions', protect, isStudent, assignmentController.getStudentSubmissionResult);
 
 // Course-aware chat (RAG over professor-uploaded materials)
 router.post('/course-chat', protect, isStudent, handleChat);

@@ -950,6 +950,7 @@ const ProfessorDashboard = () => {
             >
               <Book size={18} />
               <span>Assignments</span>
+            </button>
             <button 
               className={`prof-nav-btn ${activeTab === 'batch_evals' ? 'is-active' : ''}`}
               onClick={() => setActiveTab('batch_evals')}
@@ -980,13 +981,6 @@ const ProfessorDashboard = () => {
             >
               <AlertCircle size={18} />
               <span>Announcements</span>
-            </button>
-            <button
-              className={`prof-nav-btn ${activeTab === 'assignments' ? 'is-active' : ''}`}
-              onClick={() => setActiveTab('assignments')}
-            >
-              <Book size={18} />
-              <span>Assignments</span>
             </button>
           </nav>
 

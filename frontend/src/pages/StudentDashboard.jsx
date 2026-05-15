@@ -80,6 +80,8 @@ const StudentDashboard = () => {
   const [upcomingAssignments, setUpcomingAssignments] = useState([]);
   const [upcomingLoading, setUpcomingLoading] = useState(false);
   const [assignmentSort, setAssignmentSort] = useState('newest');
+  const [assignmentNotice, setAssignmentNotice] = useState('');
+  const assignmentNoticeTimerRef = useRef(null);
   const { on, off } = useWebSocket();
 
   // Practice tests
@@ -212,6 +214,12 @@ const StudentDashboard = () => {
       setTodos(Array.isArray(savedTodos) ? savedTodos : []);
     } catch {
       setTodos([]);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (assignmentNoticeTimerRef.current) {
+      clearTimeout(assignmentNoticeTimerRef.current);
     }
   }, []);
 
@@ -824,6 +832,80 @@ const StudentDashboard = () => {
   }, [on, off, activeCourseId, activeTab, assignmentSort]);
 
   useEffect(() => {
+    const showAssignmentNotice = (text) => {
+      if (assignmentNoticeTimerRef.current) {
+        clearTimeout(assignmentNoticeTimerRef.current);
+      }
+      setAssignmentNotice(text);
+      assignmentNoticeTimerRef.current = setTimeout(() => setAssignmentNotice(''), 4500);
+    };
+
+    const handleAssignmentDeleted = (data) => {
+      const normalizedId = String(data?.assignmentId || data?.id || '').trim();
+      if (!normalizedId) return;
+
+      showAssignmentNotice(data?.message || 'Assignment removed by professor.');
+
+      setAssignments((prev) =>
+        prev.filter((assignment) => String(assignment?._id || assignment?.id || '') !== normalizedId)
+      );
+      setUpcomingAssignments((prev) =>
+        prev.filter((assignment) => String(assignment?._id || assignment?.id || '') !== normalizedId)
+      );
+      setAssignmentFiles((prev) => {
+        const next = { ...prev };
+        delete next[normalizedId];
+        return next;
+      });
+      setAssignmentStatus((prev) => {
+        const next = { ...prev };
+        delete next[normalizedId];
+        return next;
+      });
+      setAssignmentSubmissions((prev) => {
+        const next = { ...prev };
+        delete next[normalizedId];
+        return next;
+      });
+      setAssignmentSubmissionsLoading((prev) => {
+        const next = { ...prev };
+        delete next[normalizedId];
+        return next;
+      });
+      setExpandedAssignmentId((prev) => (String(prev) === normalizedId ? '' : prev));
+
+      setTodos((prev) => {
+        const next = (Array.isArray(prev) ? prev : []).filter((todo) => {
+          if (!todo) return false;
+          if (String(todo.id) === `assignment:${normalizedId}`) return false;
+          if (todo.source === 'assignment' && String(todo.assignmentId || '') === normalizedId) return false;
+          return true;
+        });
+        saveTodosToLocalStorage(next);
+        return next;
+      });
+    };
+
+    const handleRefresh = () => {
+      fetchUpcoming();
+      fetchProgressData();
+      if (activeTab === 'courses' && activeCourseId && activeCourseId !== 'all') {
+        fetchAssignments();
+      }
+    };
+
+    on('assignmentDeleted', handleAssignmentDeleted);
+    on('assignmentListRefresh', handleRefresh);
+    on('dashboardUpdated', handleRefresh);
+
+    return () => {
+      off('assignmentDeleted', handleAssignmentDeleted);
+      off('assignmentListRefresh', handleRefresh);
+      off('dashboardUpdated', handleRefresh);
+    };
+  }, [on, off, activeCourseId, activeTab, assignmentSort]);
+
+  useEffect(() => {
     if (activeTab !== 'dashboard') return;
     fetchUpcoming();
     fetchProgressData();
@@ -1164,13 +1246,14 @@ const StudentDashboard = () => {
                 <p style={{ color: 'var(--muted)' }}>No upcoming deadlines yet.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                  {upcomingAssignments.map((deadline) => {
+                  {upcomingAssignments.map((deadline, idx) => {
                     const dueAt = new Date(deadline.deadline);
                     const diffDays = Math.max(0, Math.ceil((dueAt - new Date()) / (1000 * 60 * 60 * 24)));
                     const urgent = diffDays <= 2;
+                    const fallbackKey = `${deadline.title || 'assignment'}-${deadline.deadline || 'unknown'}-${idx}`;
                     return (
                       <div
-                        key={deadline._id}
+                        key={deadline._id || fallbackKey}
                         className="p-4 rounded-lg border"
                         style={{
                           background: 'var(--surface-hover)',
@@ -1817,6 +1900,20 @@ const StudentDashboard = () => {
 
                 <div style={{ marginTop: '2rem' }}>
                   <h3 className="text-xl font-semibold" style={{ marginBottom: '1rem' }}>Assignments</h3>
+                  {assignmentNotice && (
+                    <div
+                      style={{
+                        marginBottom: '0.75rem',
+                        padding: '0.6rem 0.9rem',
+                        borderRadius: '0.6rem',
+                        background: 'rgba(10, 132, 255, 0.12)',
+                        color: 'var(--primary)',
+                        border: '1px solid rgba(10, 132, 255, 0.25)',
+                      }}
+                    >
+                      {assignmentNotice}
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     <button className="btn-secondary" onClick={fetchAssignments}>Refresh Assignments</button>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

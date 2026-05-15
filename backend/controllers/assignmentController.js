@@ -1,8 +1,15 @@
 const axios = require('axios');
 const FormData = require('form-data');
+const fs = require('fs');
+const path = require('path');
+const mongoose = require('mongoose');
 
 const Assignment = require('../models/Assignment');
 const AssignmentSubmission = require('../models/AssignmentSubmission');
+const AssignmentDeletionLog = require('../models/AssignmentDeletionLog');
+const Course = require('../models/Course');
+const Notification = require('../models/Notification');
+const Submission = require('../models/Submission');
 const { getAiServiceUrl } = require('../config/services');
 
 const AI_BASE = getAiServiceUrl();
@@ -23,6 +30,27 @@ const toDate = (value) => {
 const hasDeadlinePassed = (deadline) => {
   if (!deadline) return false;
   return new Date().getTime() > new Date(deadline).getTime();
+};
+
+const resolveCourseByKey = async (courseKey) => {
+  const key = String(courseKey || '').trim().toLowerCase();
+  if (!key) return null;
+  return Course.findOne({
+    $expr: { $eq: [{ $toLower: '$courseCode' }, key] },
+  }).lean();
+};
+
+const deleteLocalUpload = (fileUrl) => {
+  const relative = String(fileUrl || '').trim();
+  if (!relative || !relative.startsWith('/uploads/')) return;
+  const filePath = path.join(__dirname, '..', relative);
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (error) {
+    // Best-effort cleanup only.
+  }
 };
 
 const buildFileMeta = (files = []) =>
@@ -537,6 +565,165 @@ const overrideSubmissionEvaluation = async (req, res) => {
   }
 };
 
+const deleteAssignment = async (req, res) => {
+  const professorId = req.user?._id;
+  const { assignmentId } = req.params;
+
+  if (!professorId) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(String(assignmentId))) {
+    return res.status(400).json({ message: 'Invalid assignment id' });
+  }
+
+  const assignment = await Assignment.findById(assignmentId).lean();
+  if (!assignment) {
+    return res.status(404).json({ message: 'Assignment not found' });
+  }
+
+  if (String(assignment.professor) !== String(professorId)) {
+    return res.status(403).json({ message: 'Not authorized to delete this assignment' });
+  }
+
+  const course = await resolveCourseByKey(assignment.courseKey);
+  if (course && String(course.professor) !== String(professorId)) {
+    return res.status(403).json({ message: 'Not authorized for this course' });
+  }
+
+  const studentIds = (course?.students || []).map((id) => String(id));
+  const io = req.app?.get('io');
+  const removedAt = new Date();
+
+  const session = await mongoose.startSession();
+  let legacySubmissionFiles = [];
+  let submissionCount = 0;
+
+  const runDelete = async () => {
+    const assignmentDoc = await Assignment.findById(assignmentId).session(session);
+    if (!assignmentDoc) {
+      throw new Error('Assignment not found');
+    }
+
+    if (String(assignmentDoc.professor) !== String(professorId)) {
+      throw new Error('Not authorized');
+    }
+
+    const submissions = await AssignmentSubmission.find({ assignment: assignmentId })
+      .session(session)
+      .lean();
+    submissionCount = submissions.length;
+
+    const legacySubmissions = await Submission.find({ assignment: assignmentId })
+      .session(session)
+      .lean();
+    legacySubmissionFiles = legacySubmissions
+      .flatMap((submission) => Array.isArray(submission.files) ? submission.files : [])
+      .map((file) => file?.url)
+      .filter(Boolean);
+
+    await AssignmentSubmission.deleteMany({ assignment: assignmentId }).session(session);
+    await Submission.deleteMany({ assignment: assignmentId }).session(session);
+    await Notification.deleteMany({ resourceType: 'assignment', resourceId: String(assignmentId) }).session(session);
+    await Assignment.deleteOne({ _id: assignmentId }).session(session);
+
+    await AssignmentDeletionLog.create([
+      {
+        assignmentId,
+        title: assignmentDoc.title,
+        courseKey: assignmentDoc.courseKey,
+        professorId: assignmentDoc.professor,
+        deletedBy: professorId,
+        deletedAt: removedAt,
+        submissionCount,
+        studentCount: studentIds.length,
+        snapshot: {
+          description: assignmentDoc.description,
+          rubric: assignmentDoc.rubric,
+          deadline: assignmentDoc.deadline,
+        },
+      },
+    ], { session });
+
+    if (studentIds.length) {
+      await Notification.insertMany(
+        studentIds.map((studentId) => ({
+          recipient: studentId,
+          sender: professorId,
+          type: 'assignment_removed',
+          title: 'Assignment Removed',
+          message: `An assignment was removed by your professor${assignmentDoc.title ? `: ${assignmentDoc.title}` : ''}.`,
+          resourceType: 'assignment',
+          resourceId: String(assignmentId),
+          priority: 'medium',
+        })),
+        { session }
+      );
+    }
+  };
+
+  try {
+    await session.withTransaction(runDelete);
+  } catch (error) {
+    if (String(error.message || '').includes('Transaction numbers') || String(error.message || '').includes('replica set')) {
+      await runDelete();
+    } else if (String(error.message || '').includes('Not authorized')) {
+      return res.status(403).json({ message: 'Not authorized to delete this assignment' });
+    } else if (String(error.message || '').includes('Assignment not found')) {
+      return res.status(404).json({ message: 'Assignment not found' });
+    } else {
+      return res.status(500).json({ message: 'Failed to delete assignment' });
+    }
+  } finally {
+    session.endSession();
+  }
+
+  legacySubmissionFiles.forEach((fileUrl) => deleteLocalUpload(fileUrl));
+
+  if (io) {
+    const eventPayload = {
+      assignmentId: String(assignmentId),
+      courseKey: assignment.courseKey,
+      courseId: course?._id ? String(course._id) : null,
+      professorId: String(professorId),
+      removedAt: removedAt.toISOString(),
+      message: 'Assignment removed by professor.',
+      removeAfterMs: 1500,
+    };
+
+    io.to(`user:${professorId}`).emit('assignmentDeleted', eventPayload);
+
+    if (studentIds.length) {
+      studentIds.forEach((studentId) => {
+        io.to(`user:${studentId}`).emit('assignmentDeleted', eventPayload);
+        io.to(`user:${studentId}`).emit('assignmentListRefresh', eventPayload);
+        io.to(`user:${studentId}`).emit('dashboardUpdated', eventPayload);
+        io.to(`user:${studentId}`).emit('assignments-updated', {
+          reason: 'deleted',
+          assignmentId: String(assignmentId),
+          courseId: course?._id ? String(course._id) : null,
+        });
+        io.to(`user:${studentId}`).emit('notification', {
+          type: 'assignment_removed',
+          title: 'Assignment Removed',
+          message: eventPayload.message,
+          assignmentId: String(assignmentId),
+        });
+      });
+    }
+
+    if (assignment.courseKey) {
+      io.to(`course:${assignment.courseKey}`).emit('assignmentDeleted', eventPayload);
+    }
+  }
+
+  return res.status(200).json({
+    message: 'Assignment deleted',
+    assignmentId: String(assignmentId),
+    submissionsRemoved: submissionCount,
+  });
+};
+
 module.exports = {
   createAssignment,
   getProfessorAssignments,
@@ -546,4 +733,5 @@ module.exports = {
   getProfessorSubmissions,
   getStudentSubmissionResult,
   overrideSubmissionEvaluation,
+  deleteAssignment,
 };

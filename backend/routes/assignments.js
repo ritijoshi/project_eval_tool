@@ -10,6 +10,7 @@ const {
   getProfessorSubmissions,
   getStudentSubmissionResult,
   overrideSubmissionEvaluation,
+  deleteAssignment,
 } = require('../controllers/assignmentController');
 const { protect, isProfessor, isStudent } = require('../middleware/authMiddleware');
 
@@ -31,5 +32,6 @@ router.get('/:assignmentId/result', protect, isStudent, getStudentSubmissionResu
 router.post('/:assignmentId/submit', protect, isStudent, upload.array('files', 12), submitAssignment);
 router.delete('/:assignmentId/submission', protect, isStudent, unsubmitAssignment);
 router.patch('/submissions/:submissionId/override', protect, isProfessor, overrideSubmissionEvaluation);
+router.delete('/:assignmentId', protect, isProfessor, deleteAssignment);
 
 module.exports = router;

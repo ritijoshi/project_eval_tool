@@ -1,4 +1,5 @@
 import os
+import time
 import shutil
 import json
 import re
@@ -9,6 +10,14 @@ from typing import List, Dict, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Load .env FIRST so GROQ_API_KEY and OPENAI_API_KEY are available before any placeholder logic
+try:
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'), override=True)
+    print("[AI Service] .env loaded successfully.")
+except ImportError:
+    print("[AI Service] WARNING: python-dotenv not installed. Install with: pip install python-dotenv")
 import pdfplumber
 
 app = FastAPI()
@@ -1144,16 +1153,46 @@ def evaluate_submission_core(submission_text: str, rubric: str) -> EvalResponse:
         criterion_breakdown=cleaned_breakdown,
     )
 
+def _extract_key_topics(text: str, top_n: int = 12) -> List[str]:
+    """Extract the most meaningful multi-word and single-word terms from text."""
+    # Remove common stop-words for cleaner topic extraction
+    stop = {
+        'a','an','the','and','or','but','in','on','at','to','for','of','with','by',
+        'is','was','are','were','be','been','being','have','has','had','do','does','did',
+        'will','would','could','should','may','might','shall','can','it','its','this',
+        'that','these','those','i','you','we','they','he','she','my','your','our','their',
+        'from','as','not','no','so','if','then','each','all','any','more','also','how',
+        'what','which','when','where','who','there','here','about','into','up','out',
+        'use','used','using','get','set','make','made','just','only','very','well','both',
+    }
+    words = re.findall(r'[a-zA-Z]{3,}', text.lower())
+    freq: Dict[str, int] = {}
+    for w in words:
+        if w not in stop:
+            freq[w] = freq.get(w, 0) + 1
+    sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+    return [w for w, _ in sorted_words[:top_n]]
+
+
 def build_assignment_fallback(assignment_text: str, submission_text: str) -> AssignmentEvalResponse:
+    """Smart rule-based fallback that generates personalized, contextual feedback."""
     assignment_tokens = set(tokenize_for_scoring(assignment_text))
     submission_tokens = set(tokenize_for_scoring(submission_text))
-    overlap = len(assignment_tokens.intersection(submission_tokens))
+    overlap = assignment_tokens.intersection(submission_tokens)
     submission_words = len(tokenize_for_scoring(submission_text))
 
-    relevance_ratio = (overlap / max(1, len(assignment_tokens))) if assignment_tokens else 0.0
+    relevance_ratio = len(overlap) / max(1, len(assignment_tokens)) if assignment_tokens else 0.0
     is_relevant = relevance_ratio >= 0.1
     is_incomplete = submission_words < 120
 
+    # Content signals
+    signals = summarize_submission_signal(submission_text)
+    has_code = signals['code_blocks'] > 0
+    has_headings = signals['headings'] > 0
+    has_examples = signals['examples'] > 0
+    has_references = signals['references'] > 0
+
+    # Score computation
     correctness = max(20, min(95, int(round(35 + relevance_ratio * 60))))
     topic_understanding = max(20, min(95, int(round(30 + relevance_ratio * 65))))
     completeness = max(15, min(95, int(round(min(submission_words, 600) / 6))))
@@ -1167,6 +1206,96 @@ def build_assignment_fallback(assignment_text: str, submission_text: str) -> Ass
 
     grade_label = "A" if total >= 90 else "B" if total >= 80 else "C" if total >= 70 else "D" if total >= 60 else "F"
 
+    # --- Smart strengths (based on what IS present) ---
+    strengths: List[str] = []
+    if is_relevant:
+        covered = list(overlap)[:5]
+        if covered:
+            covered_str = ', '.join(covered[:3])
+            strengths.append(f"Your submission covers key concepts from the assignment including: {covered_str}.")
+        else:
+            strengths.append("Your submission is generally aligned with the assignment topic.")
+    if submission_words >= 300:
+        strengths.append(f"Good depth — your response spans {submission_words} words, showing effort and elaboration.")
+    elif submission_words >= 150:
+        strengths.append("Adequate length with sufficient content to evaluate conceptual understanding.")
+    if has_code:
+        strengths.append("Includes code examples which demonstrates practical implementation knowledge.")
+    if has_headings:
+        strengths.append("Well-structured response with clear section organization.")
+    if has_examples:
+        strengths.append("Good use of examples to support concepts.")
+    if has_references:
+        strengths.append("Includes references or citations showing research effort.")
+    if not strengths:
+        strengths.append("Submission has been received and evaluated for all criteria.")
+
+    # --- Smart weaknesses (what's missing or weak) ---
+    missing_assignment_topics = list(assignment_tokens - submission_tokens)
+    meaningful_missing = [
+        t for t in missing_assignment_topics
+        if len(t) > 4 and t not in {'please','write','explain','describe','create','implement','provide','include'}
+    ][:5]
+
+    mistakes: List[str] = []
+    if not is_relevant:
+        mistakes.append("The submission appears off-topic — many key assignment concepts are not addressed.")
+    if is_incomplete:
+        mistakes.append(f"Submission is too brief ({submission_words} words). A thorough response should be at least 200+ words.")
+    if not has_code and 'implement' in assignment_text.lower():
+        mistakes.append("Implementation details are missing — the assignment likely requires code or pseudocode.")
+    if not has_examples:
+        mistakes.append("No concrete examples provided to validate understanding.")
+    if meaningful_missing:
+        topic_str = ', '.join(meaningful_missing[:4])
+        mistakes.append(f"Several assignment topics appear uncovered in the submission: {topic_str}.")
+    if not mistakes:
+        mistakes.append("Some rubric areas could benefit from more detailed supporting evidence.")
+
+    # --- Missing concepts ---
+    missing_concepts: List[str] = []
+    assignment_topics = _extract_key_topics(assignment_text, top_n=10)
+    submission_topics = set(_extract_key_topics(submission_text, top_n=20))
+    for topic in assignment_topics:
+        if topic not in submission_topics and len(topic) > 4:
+            missing_concepts.append(f"Topic '{topic}' from assignment requirements not addressed in submission")
+    if not missing_concepts:
+        missing_concepts.append("Map each assignment requirement explicitly to a section of your response")
+
+    # --- Improvement suggestions ---
+    suggestions: List[str] = []
+    if is_incomplete:
+        suggestions.append("Expand your response — aim for at least 300-400 words covering all required topics.")
+    if not has_code and 'implement' in assignment_text.lower():
+        suggestions.append("Add code blocks with actual implementation, not just conceptual descriptions.")
+    if not has_examples:
+        suggestions.append("Include at least 2-3 concrete examples to demonstrate understanding.")
+    if not has_headings:
+        suggestions.append("Use section headings to organize your response clearly.")
+    if meaningful_missing:
+        suggestions.append(f"Revisit and address these topics: {', '.join(meaningful_missing[:3])}.")
+    suggestions.append("Review the assignment rubric and ensure each criterion has explicit coverage in your submission.")
+
+    # --- Natural summary sentence ---
+    if total >= 80:
+        summary = f"Strong submission (Grade {grade_label}) — your work covers most required concepts with good depth, though a few areas could be strengthened."
+    elif total >= 65:
+        summary = f"Good effort (Grade {grade_label}) — your submission covers the core ideas but lacks depth in some key areas. Expand on the missing topics for a higher score."
+    elif total >= 50:
+        summary = f"Partial submission (Grade {grade_label}) — several required concepts are present but the response needs significantly more detail and coverage."
+    else:
+        summary = f"Incomplete submission (Grade {grade_label}) — the response needs substantial revision to address the assignment requirements. Please review the missing concepts listed below."
+
+    detailed_feedback = (
+        f"Your submission was analyzed using semantic overlap and content structure analysis. "
+        f"Out of {len(assignment_tokens)} key assignment terms, your submission covered {len(overlap)} ({int(relevance_ratio*100)}% relevance). "
+        f"The response is {submission_words} words long with {signals['code_blocks']} code block(s), "
+        f"{signals['headings']} section heading(s), and {signals['examples']} example(s). "
+        f"Focus on addressing the missing concepts and expanding technical depth for a better score."
+    )
+
+    print(f"[Fallback Eval] Score={total} | Relevance={int(relevance_ratio*100)}% | Words={submission_words} | Strengths={len(strengths)} | Weaknesses={len(mistakes)}")
+
     return AssignmentEvalResponse(
         total_score=total,
         max_score=100,
@@ -1179,38 +1308,57 @@ def build_assignment_fallback(assignment_text: str, submission_text: str) -> Ass
             "completeness": completeness,
             "technical_accuracy": technical_accuracy,
         },
-        strengths=[
-            "Submission addresses parts of the assignment context.",
-            "Core structure is present and can be improved iteratively.",
-        ],
-        mistakes=[
-            "Some required constraints are either weakly justified or not fully implemented.",
-        ],
-        missing_concepts=[
-            "More explicit mapping between assignment requirements and submission evidence is needed.",
-        ],
-        improvement_suggestions=[
-            "Reference each assignment requirement and show where your solution satisfies it.",
-            "Expand technical details and edge-case handling.",
-        ],
-        summary="Fallback semantic estimate generated because full LLM evaluation is unavailable.",
-        detailed_feedback="The submission was evaluated using deterministic semantic overlap and completeness heuristics. Configure Groq for richer criterion-level reasoning.",
+        strengths=strengths,
+        mistakes=mistakes,
+        missing_concepts=missing_concepts[:5],
+        improvement_suggestions=suggestions[:5],
+        summary=summary,
+        detailed_feedback=detailed_feedback,
     )
 
+def _safe_parse_llm_json(raw: str) -> Dict:
+    """Robustly extract a JSON object from an LLM response, even if wrapped in markdown fences."""
+    # Strip markdown code fences if present
+    cleaned = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(r'```\s*$', '', cleaned.strip())
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        pass
+    # Try to find the first { ... } block
+    start = cleaned.find('{')
+    end = cleaned.rfind('}')
+    if start != -1 and end > start:
+        try:
+            return json.loads(cleaned[start:end+1])
+        except Exception:
+            pass
+    return {}
+
+
 def evaluate_assignment_core(assignment_text: str, submission_text: str, rubric: str = "") -> AssignmentEvalResponse:
+    print(f"[AssignEval] Starting evaluation | assignment_len={len(assignment_text)} | submission_len={len(submission_text)} | groq_enabled={groq_llm_enabled()}")
+    print(f"[AssignEval] Submission preview: {submission_text[:200]}...")
+
     if not groq_llm_enabled():
+        print("[AssignEval] Groq not enabled — using smart fallback.")
         return build_assignment_fallback(assignment_text, submission_text)
+
+    print(f"[AssignEval] Groq enabled. Model=llama3-8b-8192. Sending to LLM...")
 
     llm = ChatGroq(model_name="llama3-8b-8192", temperature=0.0)
     parser = JsonOutputParser(pydantic_object=AssignmentEvalResponse)
+
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
             (
                 "You are a strict but fair professor evaluating assignment submissions semantically.\n"
                 "Evaluate if the submission is relevant, complete, conceptually correct, and technically accurate.\n"
-                "Use assignment context and rubric. Avoid keyword-only judgments.\n"
-                "Return ONLY JSON using this schema:\n{format_instructions}\n"
+                "Use the assignment context and rubric. Avoid keyword-only judgments; reason about concepts.\n"
+                "Return ONLY valid JSON (no markdown fences, no extra text) using this schema:\n{format_instructions}\n"
+                "IMPORTANT: All list fields (strengths, mistakes, missing_concepts, improvement_suggestions) must have at least 2 items each.\n"
+                "The summary must be a complete, natural sentence explaining the student's performance."
             ),
         ),
         (
@@ -1219,26 +1367,61 @@ def evaluate_assignment_core(assignment_text: str, submission_text: str, rubric:
                 "Assignment question/material:\n{assignment_text}\n\n"
                 "Rubric:\n{rubric}\n\n"
                 "Student submission:\n{submission_text}\n\n"
-                "Rules:\n"
-                "1) total_score must be 0-100 integer.\n"
-                "2) Fill score_breakdown with: correctness, topic_understanding, completeness, technical_accuracy.\n"
-                "3) Flag is_relevant and is_incomplete accurately.\n"
-                "4) Provide detailed, actionable feedback and missing concepts."
+                "Evaluation rules:\n"
+                "1) total_score must be a 0-100 integer reflecting actual submission quality.\n"
+                "2) score_breakdown must have: correctness, topic_understanding, completeness, technical_accuracy (all 0-100).\n"
+                "3) strengths: list what the student did WELL (at least 2 items).\n"
+                "4) mistakes: list specific errors or gaps (at least 2 items).\n"
+                "5) missing_concepts: list topics from the assignment that are absent in the submission (at least 2 items).\n"
+                "6) improvement_suggestions: concrete actionable steps to improve (at least 2 items).\n"
+                "7) summary: one clear sentence describing the overall quality.\n"
+                "8) detailed_feedback: 3-5 sentences of qualitative analysis.\n"
+                "9) Flag is_relevant (true if submission addresses the assignment topic).\n"
+                "10) Flag is_incomplete (true if submission is too brief or missing major sections)."
             ),
         ),
     ])
 
     chain = prompt | llm | parser
-    result = chain.invoke({
-        "assignment_text": assignment_text,
-        "submission_text": submission_text,
-        "rubric": rubric or "No explicit rubric provided",
+    invoke_payload = {
+        "assignment_text": assignment_text[:4000],
+        "submission_text": submission_text[:4000],
+        "rubric": rubric or "Evaluate holistically for correctness, completeness, and technical accuracy.",
         "format_instructions": parser.get_format_instructions(),
-    })
+    }
 
-    # Validate and coerce values to keep downstream processing stable.
-    total_score = coerce_score_0_100(result.get("total_score", 0), default=0)
+    # Retry logic: up to 2 retries on failure
+    result = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            print(f"[AssignEval] LLM invoke attempt {attempt + 1}/3...")
+            result = chain.invoke(invoke_payload)
+            print(f"[AssignEval] LLM raw result type={type(result).__name__} | keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+            break
+        except Exception as e:
+            last_error = e
+            print(f"[AssignEval] Attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                time.sleep(1.5)
+
+    if result is None:
+        print(f"[AssignEval] All LLM attempts failed ({last_error}). Using smart fallback.")
+        return build_assignment_fallback(assignment_text, submission_text)
+
+    # If parser returned a string (malformed), try to salvage JSON
+    if isinstance(result, str):
+        print(f"[AssignEval] Parser returned raw string — attempting JSON extraction.")
+        result = _safe_parse_llm_json(result)
+
+    # Validate and coerce all fields
+    total_score = coerce_score_0_100(result.get("total_score", 0), default=60)
     breakdown = result.get("score_breakdown", {}) or {}
+
+    def safe_list(val, default_msg: str) -> List[str]:
+        lst = val if isinstance(val, list) else []
+        lst = [str(x).strip() for x in lst if str(x).strip()]
+        return lst if lst else [default_msg]
 
     normalized = AssignmentEvalResponse(
         total_score=total_score,
@@ -1252,14 +1435,15 @@ def evaluate_assignment_core(assignment_text: str, submission_text: str, rubric:
             "completeness": coerce_score_0_100(breakdown.get("completeness", total_score), default=total_score),
             "technical_accuracy": coerce_score_0_100(breakdown.get("technical_accuracy", total_score), default=total_score),
         },
-        strengths=result.get("strengths") or [],
-        mistakes=result.get("mistakes") or [],
-        missing_concepts=result.get("missing_concepts") or [],
-        improvement_suggestions=result.get("improvement_suggestions") or [],
-        summary=str(result.get("summary") or ""),
-        detailed_feedback=str(result.get("detailed_feedback") or ""),
+        strengths=safe_list(result.get("strengths"), "Shows understanding of core concepts."),
+        mistakes=safe_list(result.get("mistakes"), "Some areas require further elaboration."),
+        missing_concepts=safe_list(result.get("missing_concepts"), "Review assignment requirements for missing topics."),
+        improvement_suggestions=safe_list(result.get("improvement_suggestions"), "Expand on key concepts with examples."),
+        summary=str(result.get("summary") or f"Submission scored {total_score}/100 — review detailed feedback below."),
+        detailed_feedback=str(result.get("detailed_feedback") or "Evaluation completed. See strengths and improvement areas above."),
     )
 
+    print(f"[AssignEval] SUCCESS | score={normalized.total_score} | strengths={len(normalized.strengths)} | mistakes={len(normalized.mistakes)} | missing={len(normalized.missing_concepts)}")
     return normalized
 
 @app.post("/course/upload")

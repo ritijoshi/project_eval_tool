@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import axios from 'axios';
 import { API_BASE } from '../config/api';
 import { useWebSocket } from '../hooks/useWebSocket';
+import AIEvaluationCard from './AIEvaluationCard';
 
 const ProfessorAssignmentsPanel = () => {
   const [assignments, setAssignments] = useState([]);
@@ -10,6 +12,12 @@ const ProfessorAssignmentsPanel = () => {
   const [selectedSubmissionId, setSelectedSubmissionId] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteStatus, setDeleteStatus] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [isAiExpanded, setIsAiExpanded] = useState(false);
+  const [isOverrideExpanded, setIsOverrideExpanded] = useState(true);
 
   const [newAssignment, setNewAssignment] = useState({
     title: '',
@@ -191,6 +199,42 @@ const ProfessorAssignmentsPanel = () => {
     }
   };
 
+  const confirmDeleteAssignment = async () => {
+    if (!deleteTarget) return;
+    if (String(deleteConfirmText || '').trim().toLowerCase() !== 'delete') {
+      setDeleteStatus('Type DELETE to confirm.');
+      return;
+    }
+
+    try {
+      setDeleteLoading(true);
+      setDeleteStatus('Deleting assignment...');
+      const token = localStorage.getItem('token');
+      await axios.delete(`${API_BASE}/api/assignments/${deleteTarget.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      setAssignments((prev) => {
+        const next = prev.filter((item) => item.id !== deleteTarget.id);
+        if (selectedAssignmentId === deleteTarget.id) {
+          setSelectedAssignmentId(next[0]?.id || '');
+          setSubmissions([]);
+          setSelectedSubmissionId('');
+        }
+        return next;
+      });
+
+      setMessage('Assignment deleted.');
+      setDeleteStatus('Assignment deleted.');
+      setDeleteTarget(null);
+      setDeleteConfirmText('');
+    } catch (err) {
+      setDeleteStatus(err.response?.data?.message || 'Failed to delete assignment.');
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   return (
     <div className="glass-panel">
       <h2 className="text-2xl font-bold mb-2">Assignment Evaluation Control</h2>
@@ -234,23 +278,37 @@ const ProfessorAssignmentsPanel = () => {
           <h3 className="font-semibold mb-2">Assignments</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '280px', overflow: 'auto' }}>
             {assignments.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setSelectedAssignmentId(item.id)}
-                style={{
-                  textAlign: 'left',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  padding: '0.6rem',
-                  background: selectedAssignmentId === item.id ? 'rgba(10,132,255,0.15)' : 'var(--surface-hover)',
-                  cursor: 'pointer',
-                }}
-              >
-                <strong>{item.title}</strong>
-                <p style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
-                  {item.courseKey} • {new Date(item.deadline).toLocaleString()}
-                </p>
-              </button>
+              <div key={item.id} style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  onClick={() => setSelectedAssignmentId(item.id)}
+                  style={{
+                    textAlign: 'left',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    padding: '0.6rem',
+                    background: selectedAssignmentId === item.id ? 'rgba(10,132,255,0.15)' : 'var(--surface-hover)',
+                    cursor: 'pointer',
+                    flex: 1,
+                  }}
+                >
+                  <strong>{item.title}</strong>
+                  <p style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+                    {item.courseKey} • {new Date(item.deadline).toLocaleString()}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteTarget(item);
+                    setDeleteConfirmText('');
+                    setDeleteStatus('');
+                  }}
+                  className="btn-secondary"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: '44px' }}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
             ))}
             {assignments.length === 0 && <p style={{ color: 'var(--muted)' }}>No assignments yet.</p>}
           </div>
@@ -288,37 +346,128 @@ const ProfessorAssignmentsPanel = () => {
               <p style={{ color: 'var(--muted)' }}>Select a submission to review.</p>
             ) : (
               <>
-                <h4 className="font-semibold mb-2">AI Evaluation</h4>
-                <p style={{ marginBottom: '0.35rem' }}>
-                  Score: {selectedSubmission.aiEvaluation?.totalScore}/{selectedSubmission.aiEvaluation?.maxScore}
-                </p>
-                <p style={{ color: 'var(--muted)', marginBottom: '0.75rem' }}>{selectedSubmission.aiEvaluation?.summary}</p>
-
-                <h4 className="font-semibold mb-2">Professor Override</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: '0.5rem' }}>
-                  <input className="glass-input" placeholder="Total score" value={overrideDraft.totalScore} onChange={(e) => setOverrideDraft({ ...overrideDraft, totalScore: e.target.value })} />
-                  <input className="glass-input" placeholder="Grade label" value={overrideDraft.gradeLabel} onChange={(e) => setOverrideDraft({ ...overrideDraft, gradeLabel: e.target.value })} />
-                  <input className="glass-input" placeholder="Correctness" value={overrideDraft.correctness} onChange={(e) => setOverrideDraft({ ...overrideDraft, correctness: e.target.value })} />
-                  <input className="glass-input" placeholder="Topic understanding" value={overrideDraft.topicUnderstanding} onChange={(e) => setOverrideDraft({ ...overrideDraft, topicUnderstanding: e.target.value })} />
-                  <input className="glass-input" placeholder="Completeness" value={overrideDraft.completeness} onChange={(e) => setOverrideDraft({ ...overrideDraft, completeness: e.target.value })} />
-                  <input className="glass-input" placeholder="Technical accuracy" value={overrideDraft.technicalAccuracy} onChange={(e) => setOverrideDraft({ ...overrideDraft, technicalAccuracy: e.target.value })} />
+                {/* AI Evaluation Collapsible */}
+                <div style={{ marginBottom: '1rem' }}>
+                  <button
+                    onClick={() => setIsAiExpanded(!isAiExpanded)}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      background: 'var(--surface-hover)', border: '1px solid var(--border)',
+                      padding: '0.8rem 1rem', borderRadius: '10px', cursor: 'pointer',
+                      fontWeight: 600, color: 'var(--text-main)',
+                    }}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      🤖 AI Evaluation
+                    </span>
+                    <span style={{ transform: isAiExpanded ? 'rotate(90deg)' : 'none', transition: '0.2s' }}>▶</span>
+                  </button>
+                  {isAiExpanded && (
+                    <div style={{ marginTop: '0.5rem' }}>
+                      <AIEvaluationCard aiEval={selectedSubmission.aiEvaluation} />
+                    </div>
+                  )}
                 </div>
-                <textarea className="glass-input" rows="3" style={{ width: '100%', marginTop: '0.5rem' }} placeholder="Feedback" value={overrideDraft.feedback} onChange={(e) => setOverrideDraft({ ...overrideDraft, feedback: e.target.value })} />
-                <textarea className="glass-input" rows="2" style={{ width: '100%', marginTop: '0.5rem' }} placeholder="Summary" value={overrideDraft.summary} onChange={(e) => setOverrideDraft({ ...overrideDraft, summary: e.target.value })} />
 
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', color: 'var(--muted)' }}>
-                  <input type="checkbox" checked={overrideDraft.approved} onChange={(e) => setOverrideDraft({ ...overrideDraft, approved: e.target.checked })} />
-                  Approve evaluation
-                </label>
+                {/* Professor Override Collapsible */}
+                <div>
+                  <button
+                    onClick={() => setIsOverrideExpanded(!isOverrideExpanded)}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      background: 'var(--surface-hover)', border: '1px solid var(--border)',
+                      padding: '0.8rem 1rem', borderRadius: '10px', cursor: 'pointer',
+                      fontWeight: 600, color: 'var(--text-main)',
+                    }}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      👨‍🏫 Professor Override
+                    </span>
+                    <span style={{ transform: isOverrideExpanded ? 'rotate(90deg)' : 'none', transition: '0.2s' }}>▶</span>
+                  </button>
+                  {isOverrideExpanded && (
+                    <div style={{ marginTop: '0.75rem', padding: '1rem', border: '1px solid var(--border)', borderRadius: '10px', background: 'rgba(0,0,0,0.2)' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(120px, 1fr))', gap: '0.5rem' }}>
+                        <input className="glass-input" placeholder="Total score" value={overrideDraft.totalScore} onChange={(e) => setOverrideDraft({ ...overrideDraft, totalScore: e.target.value })} />
+                        <input className="glass-input" placeholder="Grade label" value={overrideDraft.gradeLabel} onChange={(e) => setOverrideDraft({ ...overrideDraft, gradeLabel: e.target.value })} />
+                        <input className="glass-input" placeholder="Correctness" value={overrideDraft.correctness} onChange={(e) => setOverrideDraft({ ...overrideDraft, correctness: e.target.value })} />
+                        <input className="glass-input" placeholder="Topic understanding" value={overrideDraft.topicUnderstanding} onChange={(e) => setOverrideDraft({ ...overrideDraft, topicUnderstanding: e.target.value })} />
+                        <input className="glass-input" placeholder="Completeness" value={overrideDraft.completeness} onChange={(e) => setOverrideDraft({ ...overrideDraft, completeness: e.target.value })} />
+                        <input className="glass-input" placeholder="Technical accuracy" value={overrideDraft.technicalAccuracy} onChange={(e) => setOverrideDraft({ ...overrideDraft, technicalAccuracy: e.target.value })} />
+                      </div>
+                      <textarea className="glass-input" rows="3" style={{ width: '100%', marginTop: '0.5rem' }} placeholder="Feedback" value={overrideDraft.feedback} onChange={(e) => setOverrideDraft({ ...overrideDraft, feedback: e.target.value })} />
+                      <textarea className="glass-input" rows="2" style={{ width: '100%', marginTop: '0.5rem' }} placeholder="Summary" value={overrideDraft.summary} onChange={(e) => setOverrideDraft({ ...overrideDraft, summary: e.target.value })} />
 
-                <button className="btn-primary" style={{ marginTop: '0.6rem' }} onClick={applyOverride} disabled={loading}>
-                  Save Professor Review
-                </button>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem', color: 'var(--muted)' }}>
+                        <input type="checkbox" checked={overrideDraft.approved} onChange={(e) => setOverrideDraft({ ...overrideDraft, approved: e.target.checked })} />
+                        Approve evaluation
+                      </label>
+
+                      <button className="btn-primary" style={{ marginTop: '0.8rem', width: '100%' }} onClick={applyOverride} disabled={loading}>
+                        Save Professor Review
+                      </button>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
         </div>
       </div>
+
+      {deleteTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 50,
+          }}
+        >
+          <div className="glass-card" style={{ padding: '1.5rem', width: 'min(460px, 92vw)' }}>
+            <h3 className="text-xl font-semibold" style={{ marginBottom: '0.5rem' }}>Confirm deletion</h3>
+            <p style={{ color: 'var(--muted)', marginBottom: '1rem' }}>
+              This will permanently delete <strong>{deleteTarget.title}</strong> and all submissions.
+            </p>
+            <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--muted)', marginBottom: '0.35rem' }}>
+              Type DELETE to confirm
+            </label>
+            <input
+              className="glass-input"
+              style={{ width: '100%', marginBottom: '0.75rem' }}
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder="DELETE"
+            />
+            {deleteStatus && <p style={{ color: 'var(--muted)', marginBottom: '0.75rem' }}>{deleteStatus}</p>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteConfirmText('');
+                  setDeleteStatus('');
+                }}
+                disabled={deleteLoading}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                onClick={confirmDeleteAssignment}
+                disabled={deleteLoading}
+              >
+                {deleteLoading ? 'Deleting...' : 'Delete Assignment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

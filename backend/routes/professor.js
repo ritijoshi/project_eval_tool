@@ -12,8 +12,6 @@ const { protect, isProfessor } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const courseController = require('../controllers/courseController');
 const assignmentController = require('../controllers/assignmentController');
-const path = require('path');
-const fs = require('fs');
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -44,26 +42,8 @@ const upload = multer({
     },
 });
 
-const ensureUploadsDir = (dirPath) => {
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-    }
-};
-
-const assignmentStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const dest = path.join(__dirname, '..', 'uploads', 'assignments');
-        ensureUploadsDir(dest);
-        cb(null, dest);
-    },
-    filename: (req, file, cb) => {
-        const safeName = `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]+/g, '-')}`;
-        cb(null, safeName);
-    },
-});
-
 const assignmentUpload = multer({
-    storage: assignmentStorage,
+    storage: multer.memoryStorage(),
     limits: {
         fileSize: 25 * 1024 * 1024,
         files: 10,
@@ -96,8 +76,8 @@ router.post('/courses', protect, isProfessor, courseController.createCourse);
 router.post('/courses/:courseId/invite', protect, isProfessor, courseController.inviteStudents);
 router.delete('/courses/:courseId', protect, isProfessor, courseController.deleteCourse);
 router.post('/assignments', protect, isProfessor, assignmentUpload.array('files', 10), assignmentController.createAssignment);
-router.get('/assignments', protect, isProfessor, assignmentController.listAssignmentsForProfessor);
-router.get('/assignments/:assignmentId/submissions', protect, isProfessor, assignmentController.listAssignmentSubmissions);
-router.put('/assignments/:assignmentId/submissions/:submissionId/grade', protect, isProfessor, assignmentController.gradeSubmission);
+router.get('/assignments', protect, isProfessor, assignmentController.getProfessorAssignments);
+router.get('/assignments/:assignmentId/submissions', protect, isProfessor, assignmentController.getProfessorSubmissions);
+router.put('/assignments/:assignmentId/submissions/:submissionId/grade', protect, isProfessor, assignmentController.overrideSubmissionEvaluation);
 
 module.exports = router;

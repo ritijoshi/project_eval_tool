@@ -14,7 +14,16 @@ const NotificationSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['feedback_reviewed', 'feedback_response', 'chat_message', 'evaluation_ready', 'course_update', 'material_uploaded', 'general'],
+      enum: [
+        'feedback_reviewed',
+        'feedback_response',
+        'chat_message',
+        'evaluation_ready',
+        'course_update',
+        'material_uploaded',
+        'assignment_removed',
+        'general',
+      ],
       default: 'general',
     },
     title: {
@@ -27,7 +36,7 @@ const NotificationSchema = new mongoose.Schema(
     },
     resourceType: {
       type: String,
-      enum: ['feedback', 'chat', 'evaluation', 'course', 'material'],
+      enum: ['feedback', 'chat', 'evaluation', 'course', 'material', 'assignment'],
     },
     resourceId: String,
     read: {
