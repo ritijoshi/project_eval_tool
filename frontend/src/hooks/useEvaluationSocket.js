@@ -44,7 +44,15 @@ export function useEvaluationSocket(sessionId) {
             if (data.totalStudents !== undefined) setTotalStudents(data.totalStudents);
 
             if (data.recentResult) {
-                setRecentResults(prev => [data.recentResult, ...prev].slice(0, 10)); // keep last 10 in ephemeral stream
+                setRecentResults(prev => {
+                    const next = Array.isArray(prev) ? [...prev] : [];
+                    const idx = next.findIndex(item => item?._id === data.recentResult._id);
+                    if (idx >= 0) {
+                        next[idx] = data.recentResult;
+                        return next;
+                    }
+                    return [data.recentResult, ...next];
+                });
             }
         });
 
@@ -57,6 +65,15 @@ export function useEvaluationSocket(sessionId) {
 
             setStatus(data.status);
             setIsCompleted(true);
+
+            if (data.processedStudents !== undefined) {
+                setProcessedStudents(data.processedStudents);
+            } else if (data.evaluations) {
+                setProcessedStudents(data.evaluations.length);
+            }
+            if (data.totalStudents !== undefined) {
+                setTotalStudents(data.totalStudents);
+            }
 
             if (data.evaluations) {
                 setRecentResults(data.evaluations);

@@ -58,7 +58,7 @@ async def readiness_check():
             "openai_key_configured": bool(openai_key) and openai_key != "sk-placeholder",
             "groq_key_configured": bool(groq_key) and groq_key != "gsk-placeholder",
             "groq_enabled": groq_llm_enabled(),
-            "groq_model": os.environ.get("GROQ_MODEL", "llama3-8b-8192")
+            "groq_model": os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
         },
     }
 

@@ -85,4 +85,18 @@ export const getStudentLeaderboardDetail = async (sessionId, evaluationId) => {
     });
     return response.data;
 };
+/**
+ * Exports evaluation results for a session as an Excel file.
+ * @param {string} sessionId 
+ */
+export const exportEvaluationReport = async (sessionId) => {
+    const token = localStorage.getItem('token');
+    const response = await axios.get(`${API_URL}/${sessionId}/export`, {
+        headers: {
+            'Authorization': `Bearer ${token}`
+        },
+        responseType: 'blob' // Important for file downloads
+    });
 
+    return response.data;
+};

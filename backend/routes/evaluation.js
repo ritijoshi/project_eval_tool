@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { protect, requireRole } = require('../middleware/authMiddleware');
-const { startEvaluationSession, handleAIWebhook, getSessionResults } = require('../controllers/evaluationController');
+const { startEvaluationSession, handleAIWebhook, getSessionResults, exportEvaluationReport } = require('../controllers/evaluationController');
 
 // Ensure temporary uploads directory exists
 const tempUploadDir = path.join(__dirname, '..', 'uploads', 'temp');
@@ -57,5 +57,8 @@ router.get('/:sessionId/results', protect, getSessionResults);
 // Note: This endpoint is unauthenticated for internal microservice access,
 // but should ideally check a shared secret in production.
 router.post('/webhook', handleAIWebhook);
+
+// 4. Export Evaluation Report
+router.get('/:sessionId/export', protect, requireRole('professor'), exportEvaluationReport);
 
 module.exports = router;

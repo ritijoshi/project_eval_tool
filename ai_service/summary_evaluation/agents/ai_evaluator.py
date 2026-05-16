@@ -3,11 +3,22 @@ import os
 import re
 from typing import Dict, Any, List, Tuple, Optional
 
+import numpy as np
+
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from tenacity import retry, wait_exponential, stop_after_attempt
 
-from summary_evaluation.services.embedding_service import get_embedder, cosine_similarity
+from summary_evaluation.services.embedding_service import (
+    get_embedder,
+    cosine_similarity,
+    compute_concept_coverage_score,
+)
+from summary_evaluation.services.groq_circuit import (
+    GroqCircuitBreaker,
+    is_request_too_large_error,
+    should_trip_circuit,
+)
 
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "but", "if", "then", "to", "of", "in", "on", "for",
@@ -146,6 +157,12 @@ def _heuristic_conciseness(word_count: int) -> float:
     return _clamp(7.0 - ((word_count - 450) / 300.0) * 3.0)
 
 
+def _reference_keywords(reference_package: Dict[str, Any]) -> List[str]:
+    keywords = reference_package.get("important_keywords") or reference_package.get("important_terms") or []
+    topics = reference_package.get("main_topics") or []
+    return [str(k).strip() for k in list(keywords) + list(topics) if str(k).strip()]
+
+
 def _build_fallback_evaluation(
     student_summary: str,
     deterministic_metrics: Dict[str, float],
@@ -164,9 +181,9 @@ def _build_fallback_evaluation(
 
     metrics = {
         "topicCoverage": {"score": coverage_score, "reason": "Based on overlap with core lecture concepts."},
-        "conceptUnderstanding": {"score": similarity_score, "reason": "Semantic similarity to the lecture transcript."},
+        "conceptUnderstanding": {"score": similarity_score, "reason": "Semantic similarity to the AI reference summary."},
         "clarityReadability": {"score": clarity_score, "reason": "Sentence length and readability heuristics."},
-        "technicalAccuracy": {"score": similarity_score, "reason": "Proxy using transcript similarity."},
+        "technicalAccuracy": {"score": similarity_score, "reason": "Proxy using reference-summary similarity."},
         "completeness": {"score": completeness_score, "reason": "Length-based completeness heuristic."},
         "conciseness": {"score": conciseness_score, "reason": "Word count compared to ideal summary length."},
         "logicalFlow": {"score": flow_score, "reason": "Connector usage and structure signals."},
@@ -251,64 +268,63 @@ def _critical_thinking_score(text: str) -> float:
 
 
 def _semantic_concept_coverage(
+    student_summary: str,
     core_concepts: List[str],
     summary_vec: List[float],
     embedder,
-    threshold: float = 0.62
 ) -> Tuple[List[str], List[str], float]:
-    if not core_concepts:
+    labels = [str(c).strip() for c in core_concepts if str(c).strip()]
+    if not labels:
         return [], [], 0.0
-    hits: List[str] = []
-    misses: List[str] = []
-    for concept in core_concepts:
-        concept = str(concept or "").strip()
-        if not concept:
-            continue
-        c_vec = embedder.embed_query(concept)
-        sim = cosine_similarity(summary_vec, c_vec)
-        if sim >= threshold:
-            hits.append(concept)
-        else:
-            misses.append(concept)
-    total = max(1, len(hits) + len(misses))
-    return hits, misses, len(hits) / total
+    concept_vecs = embedder.embed_documents(labels)
+    ratio, hits, misses = compute_concept_coverage_score(
+        student_summary,
+        concept_vecs,
+        concept_labels=labels,
+        student_vec=summary_vec,
+    )
+    return hits, misses, ratio
 
 
 def _build_deterministic_evaluation(
     student_summary: str,
-    transcript_text: str,
+    reference_package: Dict[str, Any],
     core_concepts: List[str],
-    transcript_vecs: Optional[List[List[float]]] = None
+    reference_vecs: Optional[List[List[float]]] = None,
 ) -> Dict[str, Any]:
-    if not student_summary.strip() or not transcript_text.strip():
+    reference_summary = str(reference_package.get("reference_summary", "")).strip()
+    if not student_summary.strip() or not reference_summary:
         return _build_fallback_evaluation(student_summary, {}, core_concepts)
 
     embedder = get_embedder()
     summary_vec = embedder.embed_query(student_summary)
 
-    if transcript_vecs is None:
-        transcript_chunks = _chunk_text(transcript_text)
-        transcript_vecs = embedder.embed_documents(transcript_chunks) if transcript_chunks else []
+    if reference_vecs is None:
+        reference_chunks = _chunk_text(reference_summary, chunk_size=500, overlap=80)
+        reference_vecs = embedder.embed_documents(reference_chunks) if reference_chunks else []
 
     similarity = 0.0
-    if transcript_vecs:
-        similarity = max(cosine_similarity(summary_vec, t_vec) for t_vec in transcript_vecs)
+    if reference_vecs:
+        similarity = max(cosine_similarity(summary_vec, ref_vec) for ref_vec in reference_vecs)
 
-    transcript_keywords = _extract_keywords(transcript_text)
+    reference_keywords = _reference_keywords(reference_package)
+    if not reference_keywords:
+        reference_keywords = _extract_keywords(reference_summary)
     summary_keywords = _extract_keywords(student_summary)
-    keyword_overlap = len(set(transcript_keywords) & set(summary_keywords))
-    keyword_overlap_ratio = keyword_overlap / max(1, len(set(transcript_keywords)))
+    keyword_overlap = len(set(reference_keywords) & set(summary_keywords))
+    keyword_overlap_ratio = keyword_overlap / max(1, len(set(reference_keywords)))
 
     concept_hits, concept_misses, semantic_concept_ratio = _semantic_concept_coverage(
+        student_summary,
         core_concepts,
         summary_vec,
-        embedder
+        embedder,
     )
 
     missing_key_points = concept_misses[:6]
     concepts_covered = concept_hits[:6]
 
-    off_topic = [k for k in summary_keywords if k not in transcript_keywords][:6]
+    off_topic = [k for k in summary_keywords if k not in reference_keywords][:6]
 
     word_count = len(student_summary.split())
     clarity_score = _heuristic_clarity(student_summary)
@@ -327,11 +343,14 @@ def _build_deterministic_evaluation(
     metrics = {
         "topicCoverage": {
             "score": round(topic_coverage, 1),
-            "reason": f"Matched {keyword_overlap} of {len(set(transcript_keywords))} transcript keywords."
+            "reason": (
+                f"Concept coverage {semantic_concept_ratio:.0%} "
+                f"({len(concept_hits)}/{max(1, len(concept_hits) + len(concept_misses))} topics)."
+            )
         },
         "conceptUnderstanding": {
             "score": round(concept_understanding, 1),
-            "reason": "Semantic similarity against transcript content."
+            "reason": "Semantic similarity against the AI reference summary."
         },
         "clarityReadability": {
             "score": round(clarity_score, 1),
@@ -339,7 +358,7 @@ def _build_deterministic_evaluation(
         },
         "technicalAccuracy": {
             "score": round(technical_accuracy, 1),
-            "reason": "Adjusted by off-topic keyword drift and transcript similarity."
+            "reason": "Adjusted by off-topic keyword drift and reference-summary similarity."
         },
         "completeness": {
             "score": round(completeness_score, 1),
@@ -355,7 +374,7 @@ def _build_deterministic_evaluation(
         },
         "keywordMatch": {
             "score": round(keyword_match, 1),
-            "reason": "Keyword overlap with transcript topics."
+            "reason": "Keyword overlap with reference topics and terms."
         },
         "criticalThinkingDepth": {
             "score": round(critical_score, 1),
@@ -379,9 +398,9 @@ def _build_deterministic_evaluation(
 
     weak_areas = []
     if missing_key_points:
-        weak_areas.append("Missing important concepts from the transcript.")
+        weak_areas.append("Missing important concepts from the reference summary.")
     if technical_accuracy < 6.0:
-        weak_areas.append("Some explanations drift from transcript content.")
+        weak_areas.append("Some explanations drift from the expected lecture content.")
     if conciseness_score < 6.0:
         weak_areas.append("Length is not optimal for a concise summary.")
     if off_topic:
@@ -407,7 +426,7 @@ def _build_deterministic_evaluation(
         "strengths": strengths[:4],
         "weakAreas": weak_areas[:4],
         "improvements": improvements[:4],
-        "summaryInsights": "Deterministic comparison against transcript and core concepts.",
+        "summaryInsights": "Deterministic comparison against the AI reference summary and core concepts.",
         "missingKeyPoints": missing_key_points[:6],
         "conceptsCovered": concepts_covered[:6],
         "overallScore": overall_score,
@@ -447,27 +466,259 @@ def format_qualitative_feedback(ai_evaluation: Dict[str, Any]) -> str:
     return "\n".join(sections).strip()
 
 
-def _select_relevant_transcript_chunks(
-    transcript_chunks: List[str],
-    summary_text: str,
-    top_k: int = 4,
-    transcript_vecs: Optional[List[List[float]]] = None
-) -> List[str]:
-    if not transcript_chunks or not summary_text.strip():
+def _format_reference_context(
+    reference_package: Dict[str, Any],
+    max_summary_len: int = 900,
+    *,
+    compact: bool = False,
+) -> str:
+    summary = str(reference_package.get("reference_summary", "")).strip()[:max_summary_len]
+    objectives = reference_package.get("learning_objectives") or []
+    insights = reference_package.get("expected_insights") or []
+    keywords = _reference_keywords(reference_package)
+
+    if compact:
+        parts = [summary]
+        if objectives:
+            parts.append("Objectives: " + "; ".join(str(o) for o in objectives[:4]))
+        if keywords:
+            parts.append("Keywords: " + ", ".join(keywords[:10]))
+        return "\n".join(parts)
+
+    sections = [f"REFERENCE:\n{summary}"]
+    if objectives:
+        sections.append("OBJECTIVES:\n- " + "\n- ".join(str(o) for o in objectives[:5]))
+    if insights:
+        sections.append("INSIGHTS:\n- " + "\n- ".join(str(i) for i in insights[:5]))
+    if keywords:
+        sections.append("KEYWORDS: " + ", ".join(keywords[:12]))
+    return "\n\n".join(sections)
+
+
+def _compact_deterministic_signals(metrics: Dict[str, float]) -> str:
+    keys = ("similarity", "coverage", "completeness")
+    slim = {k: round(float(metrics[k]), 3) for k in keys if k in metrics}
+    return json.dumps(slim, ensure_ascii=True)
+
+
+def _mean_vector(vectors: List[List[float]]) -> List[float]:
+    if not vectors:
         return []
-    embedder = get_embedder()
-    summary_vec = embedder.embed_query(summary_text)
+    return np.mean(np.array(vectors), axis=0).tolist()
+
+
+def _select_relevant_excerpts(
+    query_vec: List[float],
+    chunks: List[str],
+    chunk_vecs: Optional[List[List[float]]],
+    *,
+    top_k: int,
+    max_chars: int,
+    embedder=None,
+) -> str:
+    """Pick the highest-similarity chunks up to max_chars (deduped)."""
+    if not chunks:
+        return ""
+    if not query_vec:
+        return chunks[0][:max_chars]
+
+    embedder = embedder or get_embedder()
     scored: List[Tuple[float, str]] = []
-    for idx, chunk in enumerate(transcript_chunks):
-        if not chunk.strip():
+    for idx, chunk in enumerate(chunks):
+        text = chunk.strip()
+        if not text:
             continue
-        if transcript_vecs and idx < len(transcript_vecs):
-            c_vec = transcript_vecs[idx]
+        if chunk_vecs and idx < len(chunk_vecs):
+            vec = chunk_vecs[idx]
         else:
-            c_vec = embedder.embed_query(chunk)
-        scored.append((cosine_similarity(summary_vec, c_vec), chunk))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in scored[:top_k]]
+            vec = embedder.embed_query(text)
+        scored.append((cosine_similarity(query_vec, vec), text))
+
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    selected: List[str] = []
+    used = 0
+    seen_prefixes = set()
+    for _, chunk in scored:
+        prefix = chunk[:64].lower()
+        if prefix in seen_prefixes:
+            continue
+        seen_prefixes.add(prefix)
+        separator = 4 if selected else 0
+        if used + separator + len(chunk) > max_chars:
+            remaining = max_chars - used - separator
+            if remaining > 80:
+                selected.append(chunk[:remaining].rstrip())
+            break
+        selected.append(chunk)
+        used += separator + len(chunk)
+        if len(selected) >= top_k:
+            break
+
+    if not selected:
+        selected = [scored[0][1][:max_chars]]
+    return "\n---\n".join(selected)
+
+
+def _reference_metadata_block(reference_package: Dict[str, Any], *, compact: bool) -> str:
+    objectives = reference_package.get("learning_objectives") or []
+    insights = reference_package.get("expected_insights") or []
+    keywords = _reference_keywords(reference_package)
+    lines: List[str] = []
+    if keywords:
+        limit = 8 if compact else 12
+        lines.append("KEYWORDS: " + ", ".join(keywords[:limit]))
+    if objectives:
+        limit = 3 if compact else 5
+        lines.append("OBJECTIVES: " + "; ".join(str(o) for o in objectives[:limit]))
+    if insights and not compact:
+        lines.append("INSIGHTS: " + "; ".join(str(i) for i in insights[:4]))
+    return "\n".join(lines)
+
+
+def _build_relevant_eval_excerpts(
+    student_summary: str,
+    reference_package: Dict[str, Any],
+    reference_vecs: Optional[List[List[float]]],
+    reference_chunks: Optional[List[str]],
+    *,
+    ref_max_chars: int,
+    sum_max_chars: int,
+    compact: bool,
+) -> Tuple[str, str]:
+    """
+    Build Groq prompt excerpts via embedding similarity (not head truncation).
+    Reference chunks are scored against the full student summary; student chunks
+    against the reference centroid.
+    """
+    embedder = get_embedder()
+    reference_summary = str(reference_package.get("reference_summary", "")).strip()
+    student_summary = student_summary.strip()
+
+    if reference_chunks is None:
+        chunk_size = 350 if compact else 450
+        reference_chunks = _chunk_text(reference_summary, chunk_size=chunk_size, overlap=70)
+    if reference_vecs is None and reference_chunks:
+        reference_vecs = embedder.embed_documents(reference_chunks)
+
+    student_chunk_size = 320 if compact else 400
+    student_chunks = _chunk_text(student_summary, chunk_size=student_chunk_size, overlap=60)
+    student_vecs = embedder.embed_documents(student_chunks) if len(student_chunks) > 1 else []
+
+    student_vec = embedder.embed_query(student_summary)
+    ref_centroid = _mean_vector(reference_vecs) if reference_vecs else student_vec
+
+    ref_top_k = 2 if compact else int(os.environ.get("GROQ_EVAL_REF_TOP_K", "3"))
+    sum_top_k = 2 if compact else int(os.environ.get("GROQ_EVAL_STUDENT_TOP_K", "3"))
+    meta = _reference_metadata_block(reference_package, compact=compact)
+    meta_budget = min(280 if compact else 380, ref_max_chars // 3)
+    body_budget = max(200, ref_max_chars - meta_budget)
+
+    if len(reference_summary) <= body_budget and len(reference_chunks) <= 1:
+        ref_body = reference_summary
+    else:
+        ref_body = _select_relevant_excerpts(
+            student_vec,
+            reference_chunks or [reference_summary],
+            reference_vecs,
+            top_k=ref_top_k,
+            max_chars=body_budget,
+            embedder=embedder,
+        )
+
+    ref_parts = [p for p in (meta, f"REFERENCE EXCERPTS:\n{ref_body}" if ref_body else "") if p]
+    reference_context = "\n\n".join(ref_parts)[:ref_max_chars]
+
+    if len(student_summary) <= sum_max_chars and len(student_chunks) <= 1:
+        student_excerpt = student_summary
+    else:
+        student_excerpt = _select_relevant_excerpts(
+            ref_centroid,
+            student_chunks or [student_summary],
+            student_vecs if len(student_chunks) > 1 else None,
+            top_k=sum_top_k,
+            max_chars=sum_max_chars,
+            embedder=embedder,
+        )
+
+    return reference_context, student_excerpt[:sum_max_chars]
+
+
+def _build_student_eval_payload(
+    student_summary: str,
+    reference_package: Dict[str, Any],
+    core_concepts: List[str],
+    deterministic_metrics: Dict[str, float],
+    reference_vecs: Optional[List[List[float]]] = None,
+    reference_chunks: Optional[List[str]] = None,
+    *,
+    compact: bool = False,
+) -> Dict[str, str]:
+    ref_cap = 500 if compact else int(os.environ.get("GROQ_EVAL_REFERENCE_CHARS", "1100"))
+    sum_cap = 450 if compact else int(os.environ.get("GROQ_EVAL_SUMMARY_CHARS", "900"))
+    reference_context, student_excerpt = _build_relevant_eval_excerpts(
+        student_summary,
+        reference_package,
+        reference_vecs,
+        reference_chunks,
+        ref_max_chars=ref_cap,
+        sum_max_chars=sum_cap,
+        compact=compact,
+    )
+    _log_llm_event(
+        "EXCERPTS",
+        f"ref_chars={len(reference_context)} student_chars={len(student_excerpt)} compact={compact}",
+    )
+    return {
+        "concepts": ", ".join(core_concepts[:6 if compact else 8]),
+        "reference": reference_context,
+        "summary": student_excerpt,
+        "signals": _compact_deterministic_signals(deterministic_metrics),
+    }
+
+
+_EVAL_PROMPT_COMPACT = (
+    "Compare student summary to the reference. Return ONLY JSON:\n"
+    '{{"metrics":{{"topicCoverage":{{"score":0-10,"reason":"..."}},'
+    '"conceptUnderstanding":{{"score":0-10,"reason":"..."}},'
+    '"clarityReadability":{{"score":0-10,"reason":"..."}},'
+    '"technicalAccuracy":{{"score":0-10,"reason":"..."}},'
+    '"completeness":{{"score":0-10,"reason":"..."}},'
+    '"conciseness":{{"score":0-10,"reason":"..."}},'
+    '"logicalFlow":{{"score":0-10,"reason":"..."}},'
+    '"keywordMatch":{{"score":0-10,"reason":"..."}},'
+    '"criticalThinkingDepth":{{"score":0-10,"reason":"..."}},'
+    '"aiConfidence":{{"score":0-10,"reason":"..."}}}},'
+    '"strengths":[],"weakAreas":[],"improvements":[],"summaryInsights":"...",'
+    '"missingKeyPoints":[],"conceptsCovered":[]}}\n'
+    "Use deterministic signals for calibration. Short reasons (max 12 words).\n"
+    "CONCEPTS: {concepts}\nREFERENCE:\n{reference}\nSTUDENT:\n{summary}\nSIGNALS: {signals}\n"
+)
+
+
+def _deterministic_ai_result(
+    deterministic_eval: Dict[str, Any],
+    *,
+    circuit_skipped: bool = False,
+) -> Dict[str, Any]:
+    result = {
+        "metrics": deterministic_eval["metrics"],
+        "strengths": deterministic_eval.get("strengths", []),
+        "weakAreas": deterministic_eval.get("weakAreas", []),
+        "improvements": deterministic_eval.get("improvements", []),
+        "summaryInsights": deterministic_eval.get("summaryInsights", ""),
+        "missingKeyPoints": deterministic_eval.get("missingKeyPoints", []),
+        "conceptsCovered": deterministic_eval.get("conceptsCovered", []),
+        "overallScore": deterministic_eval.get("overallScore", 0.0),
+        "scoreBreakdown": deterministic_eval.get("scoreBreakdown", []),
+        "scoreExplanation": deterministic_eval.get("scoreExplanation", ""),
+        "fallback": True,
+    }
+    if circuit_skipped:
+        result["groqCircuitSkipped"] = True
+    return result
 
 
 def _merge_metrics(
@@ -487,98 +738,56 @@ def _merge_metrics(
 @retry(wait=wait_exponential(multiplier=2, min=2, max=10), stop=stop_after_attempt(3))
 def evaluate_summary_with_ai(
     student_summary: str,
-    transcript_text: str,
+    reference_package: Dict[str, Any],
     core_concepts: List[str],
     deterministic_metrics: Dict[str, float],
-    transcript_vecs: Optional[List[List[float]]] = None,
-    transcript_chunks: Optional[List[str]] = None
+    reference_vecs: Optional[List[List[float]]] = None,
+    reference_chunks: Optional[List[str]] = None,
+    circuit_breaker: Optional[GroqCircuitBreaker] = None,
 ) -> Dict[str, Any]:
     if not student_summary.strip():
         return _build_fallback_evaluation(student_summary, deterministic_metrics, core_concepts)
 
     deterministic_eval = _build_deterministic_evaluation(
         student_summary=student_summary,
-        transcript_text=transcript_text,
+        reference_package=reference_package,
         core_concepts=core_concepts,
-        transcript_vecs=transcript_vecs
+        reference_vecs=reference_vecs,
     )
 
     if not _groq_enabled():
         _log_llm_event("DISABLED", "GROQ_API_KEY missing or placeholder; using deterministic evaluation")
-        return {
-            "metrics": deterministic_eval["metrics"],
-            "strengths": deterministic_eval.get("strengths", []),
-            "weakAreas": deterministic_eval.get("weakAreas", []),
-            "improvements": deterministic_eval.get("improvements", []),
-            "summaryInsights": deterministic_eval.get("summaryInsights", ""),
-            "missingKeyPoints": deterministic_eval.get("missingKeyPoints", []),
-            "conceptsCovered": deterministic_eval.get("conceptsCovered", []),
-            "fallback": True
-        }
+        return _deterministic_ai_result(deterministic_eval)
 
+    if circuit_breaker and circuit_breaker.should_skip_groq():
+        _log_llm_event("CIRCUIT_OPEN", circuit_breaker.reason or "skipping Groq for remaining students")
+        return _deterministic_ai_result(deterministic_eval, circuit_skipped=True)
+
+    max_output = int(os.environ.get("GROQ_EVAL_MAX_OUTPUT_TOKENS", "500"))
     llm = ChatGroq(
-        model_name=os.environ.get("GROQ_MODEL", "llama3-8b-8192"),
+        model_name=os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
         temperature=0.2,
-        max_tokens=900
+        max_tokens=max_output,
     )
 
-    if transcript_chunks is None:
-        transcript_chunks = _chunk_text(transcript_text)
+    prompt = PromptTemplate.from_template(_EVAL_PROMPT_COMPACT)
 
-    relevant_chunks = _select_relevant_transcript_chunks(
-        transcript_chunks=transcript_chunks,
-        summary_text=student_summary,
-        top_k=4,
-        transcript_vecs=transcript_vecs
-    )
-
-    prompt = PromptTemplate.from_template(
-        "You are an academic evaluator. Compare the transcript excerpts with the student summary.\n"
-        "Return ONLY valid JSON with the schema below.\n\n"
-        "SCHEMA:\n"
-        "{{\n"
-        "  \"metrics\": {{\n"
-        "    \"topicCoverage\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"conceptUnderstanding\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"clarityReadability\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"technicalAccuracy\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"completeness\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"conciseness\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"logicalFlow\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"keywordMatch\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"criticalThinkingDepth\": {{\"score\": 0-10, \"reason\": \"...\"}},\n"
-        "    \"aiConfidence\": {{\"score\": 0-10, \"reason\": \"...\"}}\n"
-        "  }},\n"
-        "  \"strengths\": [\"...\"],\n"
-        "  \"weakAreas\": [\"...\"],\n"
-        "  \"improvements\": [\"...\"],\n"
-        "  \"summaryInsights\": \"...\",\n"
-        "  \"missingKeyPoints\": [\"...\"],\n"
-        "  \"conceptsCovered\": [\"...\"]\n"
-        "}}\n\n"
-        "RULES:\n"
-        "- Base scores on semantic comparison between transcript and summary.\n"
-        "- Reference specific concepts and note omissions or misunderstandings.\n"
-        "- If you cite missing concepts, include them in missingKeyPoints verbatim.\n"
-        "- If you cite covered concepts, include them in conceptsCovered verbatim.\n"
-        "- Provide 2-4 items per list.\n"
-        "- Do not return markdown or extra text.\n\n"
-        "CORE CONCEPTS: {concepts}\n\n"
-        "TRANSCRIPT EXCERPTS:\n{transcript}\n\n"
-        "STUDENT SUMMARY:\n{summary}\n\n"
-        "DETERMINISTIC SIGNALS (for calibration only):\n{signals}\n"
-    )
+    def _invoke_groq(*, compact: bool = False):
+        payload = _build_student_eval_payload(
+            student_summary,
+            reference_package,
+            core_concepts,
+            deterministic_metrics,
+            reference_vecs=reference_vecs,
+            reference_chunks=reference_chunks,
+            compact=compact,
+        )
+        _log_llm_event("PROMPT", _truncate(json.dumps(payload, ensure_ascii=True)))
+        chain = prompt | llm
+        return chain.invoke(payload), payload
 
     try:
-        prompt_payload = {
-            "concepts": ", ".join(core_concepts[:10]),
-            "transcript": "\n---\n".join(relevant_chunks)[:3500],
-            "summary": student_summary[:2200],
-            "signals": json.dumps(deterministic_metrics, ensure_ascii=True)
-        }
-        _log_llm_event("PROMPT", _truncate(json.dumps(prompt_payload, ensure_ascii=True)))
-        chain = prompt | llm
-        response = chain.invoke(prompt_payload)
+        response, _ = _invoke_groq(compact=False)
         _log_llm_event("RESPONSE", _truncate(getattr(response, "content", "")))
 
         payload = _safe_json_extract(response.content)
@@ -593,16 +802,30 @@ def evaluate_summary_with_ai(
         concepts_covered = payload.get("conceptsCovered", []) or deterministic_eval.get("conceptsCovered", [])
     except Exception as exc:
         _log_llm_event("ERROR", str(exc))
-        strengths = deterministic_eval.get("strengths", [])
-        weak_areas = deterministic_eval.get("weakAreas", [])
-        improvements = deterministic_eval.get("improvements", [])
-        summary_insights = deterministic_eval.get("summaryInsights", "")
-        merged_metrics = deterministic_eval["metrics"]
-        overall_score = deterministic_eval.get("overallScore", 0.0)
-        breakdown = deterministic_eval.get("scoreBreakdown", [])
-        explanation = deterministic_eval.get("scoreExplanation", "")
-        missing_key_points = deterministic_eval.get("missingKeyPoints", [])
-        concepts_covered = deterministic_eval.get("conceptsCovered", [])
+        if is_request_too_large_error(exc):
+            _log_llm_event("RETRY", "request too large — retrying with compact payload")
+            try:
+                response, _ = _invoke_groq(compact=True)
+                _log_llm_event("RESPONSE", _truncate(getattr(response, "content", "")))
+                payload = _safe_json_extract(response.content)
+                strengths = payload.get("strengths", [])[:4]
+                weak_areas = payload.get("weakAreas", [])[:4]
+                improvements = payload.get("improvements", [])[:4]
+                summary_insights = str(payload.get("summaryInsights", "")).strip()
+                llm_metrics = payload.get("metrics", {})
+                merged_metrics = _merge_metrics(llm_metrics, deterministic_eval["metrics"])
+                overall_score, breakdown, explanation = _compute_weighted_overall(merged_metrics)
+                missing_key_points = payload.get("missingKeyPoints", []) or deterministic_eval.get("missingKeyPoints", [])
+                concepts_covered = payload.get("conceptsCovered", []) or deterministic_eval.get("conceptsCovered", [])
+            except Exception as retry_exc:
+                _log_llm_event("ERROR", f"compact retry failed: {retry_exc}")
+                if circuit_breaker and should_trip_circuit(retry_exc):
+                    circuit_breaker.trip(str(retry_exc))
+                return _deterministic_ai_result(deterministic_eval)
+        else:
+            if circuit_breaker and should_trip_circuit(exc):
+                circuit_breaker.trip(str(exc))
+            return _deterministic_ai_result(deterministic_eval)
 
     return {
         "metrics": merged_metrics,
@@ -615,5 +838,5 @@ def evaluate_summary_with_ai(
         "overallScore": overall_score,
         "scoreBreakdown": breakdown,
         "scoreExplanation": explanation,
-        "fallback": False
+        "fallback": False,
     }

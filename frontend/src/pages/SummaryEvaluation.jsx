@@ -5,7 +5,7 @@ import EvaluationStats from '../components/SummaryEvaluation/EvaluationStats';
 import ResultsTable from '../components/SummaryEvaluation/ResultsTable';
 import Leaderboard from '../components/SummaryEvaluation/Leaderboard';
 import { useEvaluationSocket } from '../hooks/useEvaluationSocket';
-import { startEvaluation, getEvaluationResults } from '../services/evaluationApi';
+import { startEvaluation, getEvaluationResults, exportEvaluationReport } from '../services/evaluationApi';
 import './SummaryEvaluation.css';
 
 export default function SummaryEvaluation() {
@@ -15,6 +15,7 @@ export default function SummaryEvaluation() {
     const [globalError, setGlobalError] = useState(null);
     const [isFetchingFinal, setIsFetchingFinal] = useState(false);
     const [viewMode, setViewMode] = useState('table'); // 'table' | 'leaderboard'
+    const [isExporting, setIsExporting] = useState(false);
 
     // 1. Transient Socket Telemetry hook
     const socket = useEvaluationSocket(sessionId);
@@ -90,6 +91,32 @@ export default function SummaryEvaluation() {
         setViewMode('table');
     };
 
+    const handleExport = async () => {
+        if (!sessionId) return;
+        setIsExporting(true);
+        try {
+            const blob = await exportEvaluationReport(sessionId);
+            const url = window.URL.createObjectURL(new Blob([blob]));
+            const link = document.createElement('a');
+            link.href = url;
+            
+            // File name will be set by the server Content-Disposition header, 
+            // but we can provide a fallback here if needed.
+            const dateStr = new Date().toISOString().split('T')[0];
+            link.setAttribute('download', `Evaluation_Report_${dateStr}.xlsx`);
+            
+            document.body.appendChild(link);
+            link.click();
+            link.parentNode.removeChild(link);
+            window.URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error('Export failed:', err);
+            setGlobalError('Failed to generate export. Please try again.');
+        } finally {
+            setIsExporting(false);
+        }
+    };
+
     return (
         <div className="summary-evaluation-container">
             <div className="header-row">
@@ -98,9 +125,18 @@ export default function SummaryEvaluation() {
                     <p className="subtitle">Upload student summaries &amp; lecture transcripts for automated AI grading.</p>
                 </div>
                 {sessionId && (
-                    <button className="btn-secondary danger-hover" onClick={handleClearSession}>
-                        Clear Active Session
-                    </button>
+                    <div className="header-actions">
+                        <button 
+                            className={`btn-primary export-btn ${isExporting ? 'loading' : ''}`} 
+                            onClick={handleExport}
+                            disabled={isExporting}
+                        >
+                            {isExporting ? 'Generating Report...' : '📊 Export AI Evaluation Report'}
+                        </button>
+                        <button className="btn-secondary danger-hover" onClick={handleClearSession}>
+                            Clear Active Session
+                        </button>
+                    </div>
                 )}
             </div>
 

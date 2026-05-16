@@ -1,5 +1,6 @@
+import os
 import numpy as np
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from langchain_huggingface import HuggingFaceEmbeddings
 
 # Initialize the embedding model globally for the service to avoid reloading it
@@ -20,20 +21,94 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
         return 0.0
     return float(dot_product / (norm_v1 * norm_v2))
 
+
+def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 60) -> List[str]:
+    if not text:
+        return []
+    chunks: List[str] = []
+    step = max(1, chunk_size - overlap)
+    for start in range(0, len(text), step):
+        chunk = text[start : start + chunk_size].strip()
+        if chunk:
+            chunks.append(chunk)
+    return chunks
+
+
+def _coverage_thresholds() -> Tuple[float, float, float]:
+    hit = float(os.environ.get("CONCEPT_COVERAGE_HIT_THRESHOLD", "0.48"))
+    floor = float(os.environ.get("CONCEPT_COVERAGE_SOFT_FLOOR", "0.30"))
+    ceil = float(os.environ.get("CONCEPT_COVERAGE_SOFT_CEIL", "0.70"))
+    return hit, floor, ceil
+
+
+def compute_concept_coverage_score(
+    student_text: str,
+    concept_vecs: List[List[float]],
+    concept_labels: Optional[List[str]] = None,
+    student_vec: Optional[List[float]] = None,
+) -> Tuple[float, List[str], List[str]]:
+    """
+    Concept coverage with partial credit (0–1).
+
+    - Compares each concept to the full summary AND to student chunks (best match).
+    - Uses soft scoring so paraphrases below a strict cutoff still receive credit.
+    """
+    if not concept_vecs:
+        return 0.0, [], []
+
+    embedder = get_embedder()
+    text = student_text.strip()
+    if student_vec is None:
+        student_vec = embedder.embed_query(text)
+
+    chunks = _chunk_text(text) if len(text) > 450 else []
+    chunk_vecs = embedder.embed_documents(chunks) if len(chunks) > 1 else []
+
+    hit_threshold, soft_floor, soft_ceil = _coverage_thresholds()
+    span = max(0.08, soft_ceil - soft_floor)
+
+    soft_scores: List[float] = []
+    hits: List[str] = []
+    misses: List[str] = []
+
+    for idx, concept_vec in enumerate(concept_vecs):
+        similarities = [cosine_similarity(student_vec, concept_vec)]
+        for chunk_vec in chunk_vecs:
+            similarities.append(cosine_similarity(chunk_vec, concept_vec))
+        best_sim = max(similarities)
+
+        partial = max(0.0, min(1.0, (best_sim - soft_floor) / span))
+        soft_scores.append(partial)
+
+        label = ""
+        if concept_labels and idx < len(concept_labels):
+            label = str(concept_labels[idx]).strip()
+        is_hit = best_sim >= hit_threshold or partial >= 0.5
+        if label:
+            if is_hit:
+                hits.append(label)
+            else:
+                misses.append(label)
+
+    coverage = sum(soft_scores) / len(soft_scores)
+    return coverage, hits, misses
+
+
 def evaluate_semantic_score(
-    student_text: str, 
-    transcript_vecs: List[List[float]],
-    concept_vecs: List[List[float]]
+    student_text: str,
+    reference_vecs: List[List[float]],
+    concept_vecs: List[List[float]],
+    *,
+    transcript_vecs: List[List[float]] = None,
 ) -> Tuple[float, Dict[str, float]]:
     """
     Deterministically scores a student summary based on 3 distinct metrics without invoking an LLM.
-    
-    1. Semantic Similarity (50%): Uses embedder to find the cosine similarity of the student 
-       text against the best-matching chunk of the lecture transcript. 
-       
-    2. Concept Coverage (30%): Uses pre-embedded concept_vecs. 
-       Checks how many cross a threshold (e.g. 0.65) against the student's text.
-       
+
+    1. Semantic Similarity (50%): Cosine similarity of the student text against the
+       AI-generated reference summary (not the raw transcript).
+
+    2. Concept Coverage (30%): Pre-embedded concept/objective vectors vs student text.
+
     3. Completeness (20%): Length modifier heuristic.
     """
     if not student_text.strip():
@@ -41,23 +116,24 @@ def evaluate_semantic_score(
 
     embedder = get_embedder()
 
-    # --- 1. Semantic Similarity ---
-    # Only embed the unique student text per invocation!
+    # --- 1. Semantic Similarity (reference summary first; legacy transcript_vecs optional) ---
     student_vec = embedder.embed_query(student_text)
-    
-    max_sim = max([cosine_similarity(student_vec, t_vec) for t_vec in transcript_vecs]) if transcript_vecs else 0.0
+
+    similarity_sources = reference_vecs or transcript_vecs or []
+    max_sim = (
+        max(cosine_similarity(student_vec, ref_vec) for ref_vec in similarity_sources)
+        if similarity_sources
+        else 0.0
+    )
     normalized_sim = max(0.0, min(1.0, max_sim))
 
 
-    # --- 2. Concept Coverage ---
-    coverage_score = 0.0
-    if concept_vecs:
-        hits = 0
-        threshold = 0.65 
-        for c_vec in concept_vecs:
-            if cosine_similarity(student_vec, c_vec) >= threshold:
-                hits += 1
-        coverage_score = hits / len(concept_vecs)
+    # --- 2. Concept Coverage (soft + chunk-aware) ---
+    coverage_score, _, _ = compute_concept_coverage_score(
+        student_text,
+        concept_vecs,
+        student_vec=student_vec,
+    )
 
 
     # --- 3. Completeness ---
