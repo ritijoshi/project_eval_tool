@@ -18,6 +18,15 @@ from assignment_evaluation.utils.file_extractor import extract_text_from_submiss
 from summary_evaluation.services.groq_circuit import GroqCircuitBreaker
 
 GROQ_EVAL_CONCURRENCY = 3
+DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b'
+RETIRED_GROQ_MODELS = {'llama-3.1-8b-instant'}
+
+
+def _groq_model():
+    configured_model = os.environ.get('GROQ_MODEL', '').strip()
+    if not configured_model or configured_model in RETIRED_GROQ_MODELS:
+        return DEFAULT_GROQ_MODEL
+    return configured_model
 
 
 async def _broadcast(webhook_url: str, payload: dict):
@@ -113,7 +122,7 @@ async def evaluate_single_submission_with_llm(
         'studentAnswer': text,
     }, ensure_ascii=False))
 
-    llm = ChatGroq(model_name=os.environ.get('GROQ_MODEL', 'openai/gpt-oss-20b'), temperature=0.0)
+    llm = ChatGroq(model_name=_groq_model(), temperature=0.0)
     prompt = ChatPromptTemplate.from_messages([
         ('system', '''You are an academic assignment evaluator. Evaluate exactly one student's submission using the assignment question, rubric, and reference answer.
 Return ONLY valid JSON. Do not copy rubric text into concepts. Do not invent criteria. Include every rubric criterion exactly once, even when its score is zero.

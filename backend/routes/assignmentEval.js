@@ -10,6 +10,11 @@ const {
   triggerSingleEval,
   getSessionResults,
   exportSessionReport,
+  listSessionsForCourse,
+  listCourseReports,
+  downloadReport,
+  deleteSession,
+  deleteReport,
 } = require('../controllers/assignmentEvalController');
 
 const router = express.Router();
@@ -46,9 +51,17 @@ router.post('/start', protect, requireRole('professor'), upload.fields([
   { name: 'submissions', maxCount: 1 },
 ]), startBatchEvalSession);
 
-router.get('/:sessionId/results', protect, getSessionResults);
-router.get('/:sessionId/export', protect, requireRole('professor'), exportSessionReport);
 router.post('/webhook', handleAssignmentWebhook);
+
+// Static-segment routes BEFORE /:sessionId to prevent Express param capture
+router.get('/course/:courseId/sessions', protect, requireRole('professor'), listSessionsForCourse);
+router.get('/course/:courseId/reports',  protect, requireRole('professor'), listCourseReports);
+router.get('/reports/:reportId/download', protect, requireRole('professor'), downloadReport);
+router.delete('/reports/:reportId',       protect, requireRole('professor'), deleteReport);
+
+router.get('/:sessionId/results',  protect,                     getSessionResults);
+router.get('/:sessionId/export',   protect, requireRole('professor'), exportSessionReport);
+router.delete('/:sessionId',       protect, requireRole('professor'), deleteSession);
 router.post('/:submissionId/single', protect, requireRole('professor'), triggerSingleEval);
 
 module.exports = router;

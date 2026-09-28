@@ -61,6 +61,12 @@ const assignmentEvalSessionSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    rubricCriteria: {
+      type: [{ title: String, maxScore: Number, description: String }],
+      default: [],
+    },
+    assignmentTitle: { type: String, default: '' },
+    courseCode: { type: String, default: '' },
     failureMetadata: {
       errorMessage: { type: String, default: '' },
       failedStage: { type: String, default: '' },

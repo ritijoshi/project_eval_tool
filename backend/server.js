@@ -114,6 +114,7 @@ app.use('/api/announcements', require('./routes/announcements'));
 app.use('/api/evaluations', require('./routes/evaluation'));
 app.use('/api/assignment-eval', require('./routes/assignmentEval'));
 app.use('/api/leaderboard', require('./routes/leaderboard'));
+app.use('/api/assignment-leaderboard', require('./routes/assignmentLeaderboard'));
 app.use('/api/group-chat', require('./routes/groupChat'));
 app.use('/api', require('./routes/tests'));
 app.use('/api', require('./routes/progress'));

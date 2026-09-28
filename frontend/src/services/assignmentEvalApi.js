@@ -2,9 +2,13 @@ import axios from 'axios';
 import { API_BASE } from '../config/api';
 
 const API_URL = `${API_BASE}/api/assignment-eval`;
+const LB_URL = `${API_BASE}/api/assignment-leaderboard`;
+
+const authHeaders = () => ({
+  Authorization: `Bearer ${localStorage.getItem('token')}`,
+});
 
 export const startAssignmentEval = async (courseId, assignmentId, sessionLabel, assignmentType, rubricFile, submissionsZip) => {
-  const token = localStorage.getItem('token');
   const formData = new FormData();
   formData.append('courseId', courseId || '');
   formData.append('assignmentId', assignmentId || '');
@@ -15,7 +19,7 @@ export const startAssignmentEval = async (courseId, assignmentId, sessionLabel, 
 
   const response = await axios.post(`${API_URL}/start`, formData, {
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...authHeaders(),
       'Content-Type': 'multipart/form-data',
     },
   });
@@ -24,26 +28,86 @@ export const startAssignmentEval = async (courseId, assignmentId, sessionLabel, 
 };
 
 export const getAssignmentEvalResults = async (sessionId) => {
-  const token = localStorage.getItem('token');
   const response = await axios.get(`${API_URL}/${sessionId}/results`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(),
   });
   return response.data;
 };
 
 export const exportAssignmentEvalReport = async (sessionId) => {
-  const token = localStorage.getItem('token');
   const response = await axios.get(`${API_URL}/${sessionId}/export`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(),
     responseType: 'blob',
   });
   return response.data;
 };
 
 export const triggerSingleEval = async (submissionId, assignmentId) => {
-  const token = localStorage.getItem('token');
   const response = await axios.post(`${API_URL}/${submissionId}/single`, { assignmentId }, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: authHeaders(),
   });
   return response.data;
 };
+
+// Feature 1 — Course-scoped sessions
+export const getSessionsForCourse = async (courseId) => {
+  const response = await axios.get(`${API_URL}/course/${courseId}/sessions`, {
+    headers: authHeaders(),
+  });
+  return response.data;
+};
+
+// Feature 3 — Report archive
+export const listCourseReports = async (courseId) => {
+  const response = await axios.get(`${API_URL}/course/${courseId}/reports`, {
+    headers: authHeaders(),
+  });
+  return response.data;
+};
+
+export const downloadSavedReport = async (reportId, fileName) => {
+  const response = await axios.get(`${API_URL}/reports/${reportId}/download`, {
+    headers: authHeaders(),
+    responseType: 'blob',
+  });
+  const blob = response.data;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName || 'eval_report.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+// Feature 4 — Assignment Leaderboard
+export const getAssignmentLeaderboard = async (sessionId) => {
+  const response = await axios.get(`${LB_URL}/${sessionId}`, {
+    headers: authHeaders(),
+  });
+  return response.data;
+};
+
+export const getAssignmentStudentDetail = async (sessionId, resultId) => {
+  const response = await axios.get(`${LB_URL}/${sessionId}/student/${resultId}`, {
+    headers: authHeaders(),
+  });
+  return response.data;
+};
+
+// History management — delete
+export const deleteEvalSession = async (sessionId) => {
+  const response = await axios.delete(`${API_URL}/${sessionId}`, {
+    headers: authHeaders(),
+  });
+  return response.data;
+};
+
+export const deleteSavedReport = async (reportId) => {
+  const response = await axios.delete(`${API_URL}/reports/${reportId}`, {
+    headers: authHeaders(),
+  });
+  return response.data;
+};
+
