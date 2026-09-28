@@ -93,6 +93,12 @@ const assignmentSubmissionSchema = new mongoose.Schema(
       default: 'pending',
       index: true,
     },
+    batchEvalSessionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'AssignmentEvalSession',
+      default: null,
+      index: true,
+    },
     gradingSource: {
       type: String,
       enum: ['ai', 'professor'],

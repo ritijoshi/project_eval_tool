@@ -958,6 +958,13 @@ const ProfessorDashboard = () => {
               <Book size={18} />
               <span>AI Batch Evaluator</span>
             </button>
+            <button
+              className="prof-nav-btn"
+              onClick={() => navigate('/assignment-evaluation')}
+            >
+              <Target size={18} />
+              <span>Assignment Evaluation</span>
+            </button>
             <button 
               className={`prof-nav-btn ${activeTab === 'courses' ? 'is-active' : ''}`}
               onClick={() => {
@@ -1109,6 +1116,14 @@ const ProfessorDashboard = () => {
           >
             <Book size={16} />
             AI Batch Evaluator
+          </button>
+          <button
+            type="button"
+            className="prof-tab"
+            onClick={() => navigate('/assignment-evaluation')}
+          >
+            <Target size={16} />
+            Assignment Evaluation
           </button>
           <button
             type="button"

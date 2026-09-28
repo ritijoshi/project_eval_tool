@@ -37,10 +37,10 @@ const METRIC_COLORS = {
 
 const getScoreFillClass = (score) => {
     if (score === null || score === undefined) return '';
-    if (score >= 8.5) return 'score-fill-excellent';
-    if (score >= 7.0) return 'score-fill-good';
-    if (score >= 5.5) return 'score-fill-average';
-    if (score >= 4.0) return 'score-fill-below';
+    if (score >= 85) return 'score-fill-excellent';
+    if (score >= 70) return 'score-fill-good';
+    if (score >= 55) return 'score-fill-average';
+    if (score >= 40) return 'score-fill-below';
     return 'score-fill-poor';
 };
 
@@ -58,11 +58,38 @@ const getMedalEmoji = (rank) => {
     return String(rank);
 };
 
-const fmt = (v) => (typeof v === 'number' ? v.toFixed(1) : 'N/A');
+const fmt = (v) => (typeof v === 'number' ? v.toFixed(1) : '—');
+
+const normalizeCriterionScore = (score, maxScore) => {
+    const numericScore = Number(score ?? 0);
+    const numericMax = Number(maxScore ?? 0);
+
+    if (!Number.isFinite(numericScore)) return null;
+    if (numericMax > 0) return Number(((numericScore / numericMax) * 10).toFixed(1));
+    if (numericScore <= 10) return Number(numericScore.toFixed(1));
+    return Number(numericScore.toFixed(1));
+};
+
+const getCriterionValue = (scoreBreakdown, criterionName) => {
+    if (!criterionName) return null;
+    const normalizedName = String(criterionName).toLowerCase();
+    const criterion = (Array.isArray(scoreBreakdown)
+        ? scoreBreakdown.find((item) => String(item?.name || item?.title || item?.criterion || '').toLowerCase() === normalizedName)
+        : null) || (
+        scoreBreakdown && typeof scoreBreakdown === 'object'
+            ? Object.entries(scoreBreakdown).find(([key]) => String(key).toLowerCase() === normalizedName)?.[1]
+            : null
+    );
+
+    if (!criterion) return null;
+    const score = criterion.score ?? criterion.value ?? 0;
+    const maxScore = criterion.maxScore ?? criterion.max ?? 0;
+    return normalizeCriterionScore(score, maxScore);
+};
 
 // ─── Score-bar component ───────────────────────────────────────────────────────
 
-function ScoreBar({ score, maxScore = 10 }) {
+function ScoreBar({ score, maxScore = 100 }) {
     const pct = Math.min(100, Math.max(0, ((score ?? 0) / maxScore) * 100));
     return (
         <div className="lb-score-bar-track">
@@ -241,7 +268,7 @@ function PodiumCard({ entry }) {
             <div className="lb-podium-name" title={entry.studentName}>{entry.studentName}</div>
             <div className="lb-podium-roll">{entry.rollNumber}</div>
             <div className="lb-podium-score">
-                {entry.overallScore.toFixed(1)}<span> / 10</span>
+                {entry.overallScore.toFixed(1)}<span> / 100</span>
             </div>
             <div className="lb-podium-percentile">Top {100 - entry.percentile + 1}%ile</div>
             {entry.badges.length > 0 && (
@@ -267,6 +294,13 @@ export default function Leaderboard({ sessionId, evaluations, status }) {
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [lastUpdated, setLastUpdated] = useState(null);
     const [hasFetched, setHasFetched] = useState(false);
+
+    const criterionNames = useMemo(() => {
+        const names = leaderboard.flatMap((entry) => Array.isArray(entry.scoreBreakdown)
+            ? entry.scoreBreakdown.map((criterion) => String(criterion?.name || criterion?.title || criterion?.criterion || 'Criterion'))
+            : Object.keys(entry.scoreBreakdown || {}));
+        return [...new Set(names)];
+    }, [leaderboard]);
 
     // Live socket updates
     const socket = useLeaderboardSocket(sessionId);
@@ -366,9 +400,11 @@ export default function Leaderboard({ sessionId, evaluations, status }) {
                 av = a.overallScore ?? -1; bv = b.overallScore ?? -1;
             } else if (sortKey === 'studentName') {
                 av = a.studentName; bv = b.studentName;
+            } else if (sortKey === 'confidence') {
+                av = a.confidence ?? -1; bv = b.confidence ?? -1;
             } else {
-                av = a.metrics?.[sortKey] ?? -1;
-                bv = b.metrics?.[sortKey] ?? -1;
+                av = getCriterionValue(a.scoreBreakdown, sortKey) ?? -1;
+                bv = getCriterionValue(b.scoreBreakdown, sortKey) ?? -1;
             }
             if (av < bv) return sortDir === 'asc' ? -1 : 1;
             if (av > bv) return sortDir === 'asc' ? 1 : -1;
@@ -504,17 +540,13 @@ export default function Leaderboard({ sessionId, evaluations, status }) {
                                     Score<SortArrow col="overallScore" />
                                 </th>
                                 <th>Percentile</th>
-                                <th className={sortKey === 'topicCoverage' ? 'sorted' : ''} onClick={() => handleSort('topicCoverage')}>
-                                    Coverage<SortArrow col="topicCoverage" />
-                                </th>
-                                <th className={sortKey === 'technicalAccuracy' ? 'sorted' : ''} onClick={() => handleSort('technicalAccuracy')}>
-                                    Accuracy<SortArrow col="technicalAccuracy" />
-                                </th>
-                                <th className={sortKey === 'clarityReadability' ? 'sorted' : ''} onClick={() => handleSort('clarityReadability')}>
-                                    Clarity<SortArrow col="clarityReadability" />
-                                </th>
-                                <th className={sortKey === 'criticalThinkingDepth' ? 'sorted' : ''} onClick={() => handleSort('criticalThinkingDepth')}>
-                                    Critical<SortArrow col="criticalThinkingDepth" />
+                                {criterionNames.map((criterionName) => (
+                                    <th key={criterionName} className={sortKey === criterionName ? 'sorted' : ''} onClick={() => handleSort(criterionName)}>
+                                        {criterionName}<SortArrow col={criterionName} />
+                                    </th>
+                                ))}
+                                <th className={sortKey === 'confidence' ? 'sorted' : ''} onClick={() => handleSort('confidence')}>
+                                    Confidence<SortArrow col="confidence" />
                                 </th>
                                 <th>Analysis</th>
                             </tr>
@@ -540,7 +572,7 @@ export default function Leaderboard({ sessionId, evaluations, status }) {
 
                                             {/* Score + bar */}
                                             <td className="lb-score-cell">
-                                                <div className="lb-score-val">{entry.overallScore.toFixed(1)} <small style={{ fontSize: '0.68rem', opacity: 0.6 }}>/10</small></div>
+                                                <div className="lb-score-val">{entry.overallScore.toFixed(1)} <small style={{ fontSize: '0.68rem', opacity: 0.6 }}>/100</small></div>
                                                 <ScoreBar score={entry.overallScore} />
                                             </td>
 
@@ -549,25 +581,19 @@ export default function Leaderboard({ sessionId, evaluations, status }) {
                                                 <span className="lb-percentile-chip">P{entry.percentile}</span>
                                             </td>
 
-                                            {/* Metrics */}
+                                            {criterionNames.map((criterionName) => (
+                                                <td key={`${entry.evaluationId}-${criterionName}`}>
+                                                    <span className="lb-metric-val">
+                                                        {fmt(getCriterionValue(entry.scoreBreakdown, criterionName))}
+                                                    </span>
+                                                </td>
+                                            ))}
+
                                             <td>
-                                                <span className={`lb-metric-val ${entry.metrics.topicCoverage === null ? 'na' : ''}`}>
-                                                    {fmt(entry.metrics.topicCoverage)}
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <span className={`lb-metric-val ${entry.metrics.technicalAccuracy === null ? 'na' : ''}`}>
-                                                    {fmt(entry.metrics.technicalAccuracy)}
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <span className={`lb-metric-val ${entry.metrics.clarityReadability === null ? 'na' : ''}`}>
-                                                    {fmt(entry.metrics.clarityReadability)}
-                                                </span>
-                                            </td>
-                                            <td>
-                                                <span className={`lb-metric-val ${entry.metrics.criticalThinkingDepth === null ? 'na' : ''}`}>
-                                                    {fmt(entry.metrics.criticalThinkingDepth)}
+                                                <span className="lb-metric-val">
+                                                    {entry.confidence === null || entry.confidence === undefined || entry.confidence === ''
+                                                        ? '—'
+                                                        : `${(entry.confidence <= 1 ? entry.confidence * 100 : entry.confidence).toFixed(0)}%`}
                                                 </span>
                                             </td>
 

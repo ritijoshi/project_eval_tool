@@ -36,6 +36,11 @@ try:
 except ImportError as e:
     print(f"Failed to load summary_evaluation router: {e}")
 
+try:
+    from assignment_evaluation.routes.assign_eval_routes import router as assignment_eval_router
+    app.include_router(assignment_eval_router)
+except ImportError as e:
+    print(f"Failed to load assignment_evaluation router: {e}")
 
 
 @app.get("/health")

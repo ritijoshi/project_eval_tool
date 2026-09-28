@@ -2,172 +2,147 @@ import React, { useState, useMemo } from 'react';
 import StudentRow from './StudentRow';
 import './ResultsTable.css';
 
+const normalizeCriterionScore = (score, maxScore) => {
+    const numericScore = Number(score ?? 0);
+    const numericMax = Number(maxScore ?? 0);
+
+    if (!Number.isFinite(numericScore)) return null;
+    if (numericMax > 0) return Number(((numericScore / numericMax) * 10).toFixed(1));
+    if (numericScore <= 10) return Number(numericScore.toFixed(1));
+    return Number(numericScore.toFixed(1));
+};
+
+const extractBreakdownNames = (breakdown) => {
+    if (Array.isArray(breakdown)) {
+        return breakdown.map((criterion) => String(criterion?.name || criterion?.title || criterion?.criterion || 'Criterion')).filter(Boolean);
+    }
+    if (breakdown && typeof breakdown === 'object') {
+        return Object.keys(breakdown);
+    }
+    return [];
+};
+
+const findCriterion = (breakdown, criterionName) => {
+    if (!criterionName) return null;
+    const normalizedName = String(criterionName).toLowerCase();
+
+    if (Array.isArray(breakdown)) {
+        return breakdown.find((item) => String(item?.name || item?.title || item?.criterion || '').toLowerCase() === normalizedName) || null;
+    }
+
+    if (breakdown && typeof breakdown === 'object') {
+        const direct = breakdown[criterionName];
+        if (direct) return direct;
+        const matchedKey = Object.keys(breakdown).find((key) => String(key).toLowerCase() === normalizedName);
+        return matchedKey ? breakdown[matchedKey] : null;
+    }
+
+    return null;
+};
+
 export default function ResultsTable({ evaluations, status, sessionMetadata }) {
     const [searchTerm, setSearchTerm] = useState('');
     const [sortConfig, setSortConfig] = useState({ key: 'score', direction: 'desc' });
 
     const getOverallScore = (ev) => {
-        const overall = ev.aiEvaluation?.overallScore;
-        if (typeof overall === 'number') return overall;
-        if (typeof ev.score === 'number') return ev.score;
-        return null;
+        const overall = ev?.aiEvaluation?.overallScore ?? ev?.overallScore ?? ev?.score;
+        return typeof overall === 'number' ? overall : null;
     };
 
-    const getAiScore = (ev, key, fallbackScore = null) => {
-        const metric = ev.aiEvaluation?.metrics?.[key];
-        if (metric && typeof metric.score === 'number') return metric.score;
-        if (typeof fallbackScore === 'number') return fallbackScore;
-        return null;
+    const criterionNames = useMemo(() => {
+        const names = evaluations.flatMap((ev) => extractBreakdownNames(ev?.aiEvaluation?.scoreBreakdown || ev?.scoreBreakdown || {}));
+        return [...new Set(names)];
+    }, [evaluations]);
+
+    const getCriterionValue = (ev, criterionName) => {
+        const breakdown = ev?.aiEvaluation?.scoreBreakdown || ev?.scoreBreakdown || {};
+        const criterion = findCriterion(breakdown, criterionName);
+        if (!criterion) return null;
+        const score = criterion.score ?? criterion.value ?? 0;
+        const maxScore = criterion.maxScore ?? criterion.max ?? 0;
+        return normalizeCriterionScore(score, maxScore);
     };
 
-    // 1. Immutable Filtering & Sorting driven by useMemo
     const processedEvaluations = useMemo(() => {
         let filterable = [...evaluations];
 
-        // Search filtering (name)
         if (searchTerm) {
             const lowerTerm = searchTerm.toLowerCase();
-            filterable = filterable.filter(ev =>
-                ev.studentName.toLowerCase().includes(lowerTerm)
-            );
+            filterable = filterable.filter((ev) => {
+                const student = (ev.studentName || '').toLowerCase();
+                const fileName = (ev.fileName || ev.file_name || '').toLowerCase();
+                const rollNumber = (ev.rollNumber || ev.rollNo || '').toLowerCase();
+                return student.includes(lowerTerm) || fileName.includes(lowerTerm) || rollNumber.includes(lowerTerm);
+            });
         }
 
-        // Sorting
         filterable.sort((a, b) => {
-            const aValue = (() => {
-                switch (sortConfig.key) {
-                    case 'topicCoverage':
-                        return getAiScore(a, 'topicCoverage', (a.metrics?.coverage ?? null) * 10);
-                    case 'clarityReadability':
-                        return getAiScore(a, 'clarityReadability', (a.metrics?.clarity ?? null) * 10);
-                    case 'technicalAccuracy':
-                        return getAiScore(a, 'technicalAccuracy', (a.metrics?.similarity ?? null) * 10);
-                    case 'completeness':
-                        return getAiScore(a, 'completeness', (a.metrics?.completeness ?? null) * 10);
-                    case 'logicalFlow':
-                        return getAiScore(a, 'logicalFlow');
-                    case 'criticalThinkingDepth':
-                        return getAiScore(a, 'criticalThinkingDepth');
-                    case 'aiConfidence':
-                        return getAiScore(a, 'aiConfidence');
-                    case 'score':
-                        return getOverallScore(a);
-                    default:
-                        return a[sortConfig.key];
-                }
-            })();
+            const aValue = sortConfig.key === 'score'
+                ? getOverallScore(a)
+                : sortConfig.key === 'studentName'
+                    ? (a.studentName || '').toLowerCase()
+                    : sortConfig.key === 'confidence'
+                        ? (a.aiEvaluation?.confidence ?? a.confidence ?? null)
+                        : getCriterionValue(a, sortConfig.key);
 
-            const bValue = (() => {
-                switch (sortConfig.key) {
-                    case 'topicCoverage':
-                        return getAiScore(b, 'topicCoverage', (b.metrics?.coverage ?? null) * 10);
-                    case 'clarityReadability':
-                        return getAiScore(b, 'clarityReadability', (b.metrics?.clarity ?? null) * 10);
-                    case 'technicalAccuracy':
-                        return getAiScore(b, 'technicalAccuracy', (b.metrics?.similarity ?? null) * 10);
-                    case 'completeness':
-                        return getAiScore(b, 'completeness', (b.metrics?.completeness ?? null) * 10);
-                    case 'logicalFlow':
-                        return getAiScore(b, 'logicalFlow');
-                    case 'criticalThinkingDepth':
-                        return getAiScore(b, 'criticalThinkingDepth');
-                    case 'aiConfidence':
-                        return getAiScore(b, 'aiConfidence');
-                    case 'score':
-                        return getOverallScore(b);
-                    default:
-                        return b[sortConfig.key];
-                }
-            })();
+            const bValue = sortConfig.key === 'score'
+                ? getOverallScore(b)
+                : sortConfig.key === 'studentName'
+                    ? (b.studentName || '').toLowerCase()
+                    : sortConfig.key === 'confidence'
+                        ? (b.aiEvaluation?.confidence ?? b.confidence ?? null)
+                        : getCriterionValue(b, sortConfig.key);
 
             if (aValue === null || aValue === undefined) return 1;
             if (bValue === null || bValue === undefined) return -1;
 
-            if (aValue < bValue) {
-                return sortConfig.direction === 'asc' ? -1 : 1;
+            if (typeof aValue === 'string' && typeof bValue === 'string') {
+                return sortConfig.direction === 'asc'
+                    ? aValue.localeCompare(bValue)
+                    : bValue.localeCompare(aValue);
             }
-            if (aValue > bValue) {
-                return sortConfig.direction === 'asc' ? 1 : -1;
-            }
+
+            if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
             return 0;
         });
 
         return filterable;
     }, [evaluations, searchTerm, sortConfig]);
 
-    // 2. Client-Side CSV Export (Server bandwidth saving)
     const handleExportCSV = () => {
         if (!processedEvaluations || processedEvaluations.length === 0) return;
 
         const headers = [
-            'Student Name', 'Overall Score (/10)',
-            'Topic Coverage', 'Concept Understanding', 'Clarity & Readability',
-            'Technical Accuracy', 'Completeness', 'Conciseness',
-            'Logical Flow', 'Keyword Match', 'Critical Thinking Depth',
-            'AI Confidence',
-            'Topic Coverage Reason', 'Concept Understanding Reason', 'Clarity Reason',
-            'Accuracy Reason', 'Completeness Reason', 'Conciseness Reason',
-            'Flow Reason', 'Keyword Match Reason', 'Critical Thinking Reason',
-            'Confidence Reason',
-            'Strengths', 'Weak Areas', 'Improvements',
-            'Summary Insights', 'Missing Key Points', 'Concepts Covered',
-            'Score Explanation', 'AI Fallback Used', 'Feedback', 'Status'
+            'Student Name', 'Submission', 'Overall Score (/100)', ...criterionNames, 'Confidence', 'Strengths', 'Mistakes', 'Missing Concepts', 'Feedback', 'Status'
         ];
 
-        // Rows processing
-        const csvRows = processedEvaluations.map(ev => {
-            const aiMetrics = ev.aiEvaluation?.metrics || {};
-            const scoreOrNA = (value) => (typeof value === 'number' ? value.toFixed(1) : 'N/A');
-            const listOrNA = (items = []) => (items.length ? items.join('\n') : 'N/A');
-            const csvEscape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-
+        const csvRows = processedEvaluations.map((ev) => {
             const row = [
-                csvEscape(ev.studentName),
-                csvEscape(getOverallScore(ev) ?? 0),
-                csvEscape(scoreOrNA(aiMetrics.topicCoverage?.score ?? (ev.metrics?.coverage ?? null) * 10)),
-                csvEscape(scoreOrNA(aiMetrics.conceptUnderstanding?.score ?? (ev.metrics?.similarity ?? null) * 10)),
-                csvEscape(scoreOrNA(aiMetrics.clarityReadability?.score ?? (ev.metrics?.clarity ?? null) * 10)),
-                csvEscape(scoreOrNA(aiMetrics.technicalAccuracy?.score ?? (ev.metrics?.similarity ?? null) * 10)),
-                csvEscape(scoreOrNA(aiMetrics.completeness?.score ?? (ev.metrics?.completeness ?? null) * 10)),
-                csvEscape(scoreOrNA(aiMetrics.conciseness?.score)),
-                csvEscape(scoreOrNA(aiMetrics.logicalFlow?.score)),
-                csvEscape(scoreOrNA(aiMetrics.keywordMatch?.score ?? (ev.metrics?.coverage ?? null) * 10)),
-                csvEscape(scoreOrNA(aiMetrics.criticalThinkingDepth?.score)),
-                csvEscape(scoreOrNA(aiMetrics.aiConfidence?.score)),
-                csvEscape(aiMetrics.topicCoverage?.reason || ''),
-                csvEscape(aiMetrics.conceptUnderstanding?.reason || ''),
-                csvEscape(aiMetrics.clarityReadability?.reason || ''),
-                csvEscape(aiMetrics.technicalAccuracy?.reason || ''),
-                csvEscape(aiMetrics.completeness?.reason || ''),
-                csvEscape(aiMetrics.conciseness?.reason || ''),
-                csvEscape(aiMetrics.logicalFlow?.reason || ''),
-                csvEscape(aiMetrics.keywordMatch?.reason || ''),
-                csvEscape(aiMetrics.criticalThinkingDepth?.reason || ''),
-                csvEscape(aiMetrics.aiConfidence?.reason || ''),
-                csvEscape(listOrNA(ev.aiEvaluation?.strengths || [])),
-                csvEscape(listOrNA(ev.aiEvaluation?.weakAreas || [])),
-                csvEscape(listOrNA(ev.aiEvaluation?.improvements || [])),
-                csvEscape(ev.aiEvaluation?.summaryInsights || ''),
-                csvEscape(listOrNA(ev.aiEvaluation?.missingKeyPoints || [])),
-                csvEscape(listOrNA(ev.aiEvaluation?.conceptsCovered || [])),
-                csvEscape(ev.aiEvaluation?.scoreExplanation || ''),
-                csvEscape(ev.aiEvaluation?.fallback ? 'Yes' : 'No'),
-                csvEscape(ev.feedback || ''),
-                csvEscape(ev.evaluationStatus)
+                ev.studentName || 'Unknown',
+                ev.fileName || ev.file_name || 'N/A',
+                getOverallScore(ev) ?? '—',
+                ...criterionNames.map((criterionName) => {
+                    const score = getCriterionValue(ev, criterionName);
+                    return score === null ? '—' : score.toFixed(1);
+                }),
+                ev.aiEvaluation?.confidence ?? ev.confidence ?? '—',
+                (ev.aiEvaluation?.strengths || ev.strengths || []).filter(Boolean).join('; '),
+                (ev.aiEvaluation?.mistakes || ev.mistakes || []).filter(Boolean).join('; '),
+                (ev.aiEvaluation?.missingConcepts || ev.missingConcepts || []).filter(Boolean).join('; '),
+                ev.aiEvaluation?.overallFeedback || ev.overallFeedback || ev.feedback || '—',
+                ev.evaluationStatus || 'COMPLETED'
             ];
-            return row.join(',');
+
+            return row.map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',');
         });
 
-        const csvContent = [headers.join(','), ...csvRows].join('\n');
-
-        // Native browser blob attachment
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement("a");
+        const blob = new Blob([[headers.join(','), ...csvRows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
-
         const timestamp = new Date().toISOString().split('T')[0];
-        link.setAttribute("href", url);
-        link.setAttribute("download", `Lecture_Eval_${sessionMetadata?.topic || 'export'}_${timestamp}.csv`);
+        link.setAttribute('href', url);
+        link.setAttribute('download', `Assignment_Eval_${sessionMetadata?.topic || 'export'}_${timestamp}.csv`);
         link.style.visibility = 'hidden';
         document.body.appendChild(link);
         link.click();
@@ -176,13 +151,10 @@ export default function ResultsTable({ evaluations, status, sessionMetadata }) {
 
     const handleSort = (key) => {
         let direction = 'asc';
-        if (sortConfig.key === key && sortConfig.direction === 'asc') {
-            direction = 'desc';
-        }
+        if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
         setSortConfig({ key, direction });
     };
 
-    // 3. UI Zero States
     if (status === 'UPLOADED' || status === 'EXTRACTING' || status === 'ANALYZING_TRANSCRIPT') {
         return (
             <div className="table-loading-state card">
@@ -206,19 +178,13 @@ export default function ResultsTable({ evaluations, status, sessionMetadata }) {
             <div className="table-toolbar">
                 <input
                     type="text"
-                    placeholder="Search Name..."
+                    placeholder="Search by name, roll number, or file…"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="search-input"
                 />
 
-                <button
-                    onClick={handleExportCSV}
-                    className="btn-secondary"
-                    disabled={evaluations.length === 0}
-                >
-                    📥 Export CSV
-                </button>
+                <button onClick={handleExportCSV} className="btn-secondary" disabled={evaluations.length === 0}>📥 Export CSV</button>
             </div>
 
             <div className="table-responsive">
@@ -226,24 +192,21 @@ export default function ResultsTable({ evaluations, status, sessionMetadata }) {
                     <thead>
                         <tr>
                             <th onClick={() => handleSort('studentName')}>Student {sortConfig.key === 'studentName' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('score')} style={{ minWidth: '100px' }}>Overall {sortConfig.key === 'score' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('topicCoverage')}>Coverage {sortConfig.key === 'topicCoverage' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('clarityReadability')}>Clarity {sortConfig.key === 'clarityReadability' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('technicalAccuracy')}>Accuracy {sortConfig.key === 'technicalAccuracy' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('completeness')}>Complete {sortConfig.key === 'completeness' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('logicalFlow')}>Flow {sortConfig.key === 'logicalFlow' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('criticalThinkingDepth')}>Critical {sortConfig.key === 'criticalThinkingDepth' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
-                            <th onClick={() => handleSort('aiConfidence')}>Confidence {sortConfig.key === 'aiConfidence' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
+                            <th onClick={() => handleSort('score')} style={{ minWidth: '110px' }}>Overall {sortConfig.key === 'score' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
+                            {criterionNames.map((criterion) => (
+                                <th key={criterion} onClick={() => handleSort(criterion)}>{criterion} {sortConfig.key === criterion && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
+                            ))}
+                            <th onClick={() => handleSort('confidence')}>Confidence {sortConfig.key === 'confidence' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</th>
                             <th>Strengths</th>
-                            <th>Weak Areas</th>
-                            <th>Improvements</th>
+                            <th>Mistakes</th>
+                            <th>Missing Concepts</th>
+                            <th>Feedback</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {/* Requirement 1: Usage of deterministic _id as React key */}
-                        {processedEvaluations.map(ev => (
-                            <StudentRow key={ev._id} ev={ev} />
+                        {processedEvaluations.map((ev) => (
+                            <StudentRow key={ev._id || `${ev.studentName}-${ev.fileName}`} ev={ev} criterionNames={criterionNames} />
                         ))}
                     </tbody>
                 </table>

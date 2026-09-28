@@ -11,11 +11,14 @@ const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { getAllowedOrigins } = require('./config/services');
 const path = require('path');
 const { startAnnouncementScheduler } = require('./jobs/announcementScheduler');
+const { ensureDemoUsers } = require('./config/seedDemoUsers');
 
 dotenv.config();
 
 // Connect to database
-connectDB();
+connectDB()
+    .then(() => ensureDemoUsers())
+    .catch((error) => console.warn('Startup seed skipped:', error.message));
 
 const app = express();
 const server = http.createServer(app);
@@ -109,6 +112,7 @@ app.use('/api/assignments', require('./routes/assignments'));
 app.use('/api/user', require('./routes/user'));
 app.use('/api/announcements', require('./routes/announcements'));
 app.use('/api/evaluations', require('./routes/evaluation'));
+app.use('/api/assignment-eval', require('./routes/assignmentEval'));
 app.use('/api/leaderboard', require('./routes/leaderboard'));
 app.use('/api/group-chat', require('./routes/groupChat'));
 app.use('/api', require('./routes/tests'));

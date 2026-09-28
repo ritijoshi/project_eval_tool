@@ -109,6 +109,24 @@ exports.handleAIWebhook = async (req, res, next) => {
         // If there's a new student result, save it to StudentEvaluation collection
         let savedResult = null;
         if (latestResult) {
+            const normalizedAiEvaluation = {
+                ...(latestResult.aiEvaluation || {}),
+                overallScore: latestResult.aiEvaluation?.overallScore ?? latestResult.overallScore ?? latestResult.score ?? null,
+                scoreBreakdown: latestResult.aiEvaluation?.scoreBreakdown ?? latestResult.scoreBreakdown ?? [],
+                confidence: latestResult.aiEvaluation?.confidence ?? latestResult.confidence ?? null,
+                strengths: latestResult.aiEvaluation?.strengths ?? latestResult.strengths ?? [],
+                weakAreas: latestResult.aiEvaluation?.weakAreas ?? latestResult.weakAreas ?? [],
+                mistakes: latestResult.aiEvaluation?.mistakes ?? latestResult.mistakes ?? [],
+                improvements: latestResult.aiEvaluation?.improvements ?? latestResult.improvements ?? [],
+                missingKeyPoints: latestResult.aiEvaluation?.missingKeyPoints ?? latestResult.missingKeyPoints ?? [],
+                missingConcepts: latestResult.aiEvaluation?.missingConcepts ?? latestResult.missingConcepts ?? [],
+                conceptsCovered: latestResult.aiEvaluation?.conceptsCovered ?? latestResult.conceptsCovered ?? [],
+                summaryInsights: latestResult.aiEvaluation?.summaryInsights ?? latestResult.summaryInsights ?? '',
+                scoreExplanation: latestResult.aiEvaluation?.scoreExplanation ?? latestResult.scoreExplanation ?? '',
+                feedback: latestResult.aiEvaluation?.feedback ?? latestResult.feedback ?? '',
+                fallback: latestResult.aiEvaluation?.fallback ?? latestResult.fallback ?? false,
+            };
+
             savedResult = await StudentEvaluation.create({
                 sessionId: session._id,
                 studentName: latestResult.studentName || 'Unknown',
@@ -117,7 +135,7 @@ exports.handleAIWebhook = async (req, res, next) => {
                 summaryText: latestResult.summaryText || '',
                 score: latestResult.score,
                 metrics: latestResult.metrics || {},
-                aiEvaluation: latestResult.aiEvaluation || {},
+                aiEvaluation: normalizedAiEvaluation,
                 feedback: latestResult.feedback,
                 evaluationStatus: latestResult.success ? 'COMPLETED' : 'FAILED',
                 errorMessage: latestResult.errorMessage || ''
@@ -141,6 +159,23 @@ exports.handleAIWebhook = async (req, res, next) => {
             const ops = results.map((result) => {
                 const rollNumber = result.rollNumber || result.rollNo || 'UNKNOWN';
                 const studentName = result.studentName || 'Unknown';
+                const normalizedAiEvaluation = {
+                    ...(result.aiEvaluation || {}),
+                    overallScore: result.aiEvaluation?.overallScore ?? result.overallScore ?? result.score ?? null,
+                    scoreBreakdown: result.aiEvaluation?.scoreBreakdown ?? result.scoreBreakdown ?? [],
+                    confidence: result.aiEvaluation?.confidence ?? result.confidence ?? null,
+                    strengths: result.aiEvaluation?.strengths ?? result.strengths ?? [],
+                    weakAreas: result.aiEvaluation?.weakAreas ?? result.weakAreas ?? [],
+                    mistakes: result.aiEvaluation?.mistakes ?? result.mistakes ?? [],
+                    improvements: result.aiEvaluation?.improvements ?? result.improvements ?? [],
+                    missingKeyPoints: result.aiEvaluation?.missingKeyPoints ?? result.missingKeyPoints ?? [],
+                    missingConcepts: result.aiEvaluation?.missingConcepts ?? result.missingConcepts ?? [],
+                    conceptsCovered: result.aiEvaluation?.conceptsCovered ?? result.conceptsCovered ?? [],
+                    summaryInsights: result.aiEvaluation?.summaryInsights ?? result.summaryInsights ?? '',
+                    scoreExplanation: result.aiEvaluation?.scoreExplanation ?? result.scoreExplanation ?? '',
+                    feedback: result.aiEvaluation?.feedback ?? result.feedback ?? '',
+                    fallback: result.aiEvaluation?.fallback ?? result.fallback ?? false,
+                };
                 return {
                     updateOne: {
                         filter: { sessionId: session._id, rollNumber, studentName },
@@ -151,7 +186,7 @@ exports.handleAIWebhook = async (req, res, next) => {
                                 summaryText: result.summaryText || '',
                                 score: result.score ?? null,
                                 metrics: result.metrics || {},
-                                aiEvaluation: result.aiEvaluation || {},
+                                aiEvaluation: normalizedAiEvaluation,
                                 feedback: result.feedback,
                                 evaluationStatus: result.success ? 'COMPLETED' : 'FAILED',
                                 errorMessage: result.errorMessage || ''

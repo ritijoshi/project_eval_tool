@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Login from './pages/Login';
 import ProfessorDashboard from './pages/ProfessorDashboard';
 import StudentDashboard from './pages/StudentDashboard';
+import AssignmentEvaluation from './pages/AssignmentEvaluation';
 import RequireRole from './components/RequireRole';
 import { ActiveCourseProvider } from './context/ActiveCourseContext';
 
@@ -26,6 +27,14 @@ function App() {
               element={
                 <RequireRole role="student">
                   <StudentDashboard />
+                </RequireRole>
+              }
+            />
+            <Route
+              path="/assignment-evaluation"
+              element={
+                <RequireRole role="professor">
+                  <AssignmentEvaluation />
                 </RequireRole>
               }
             />
