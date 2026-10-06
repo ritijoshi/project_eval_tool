@@ -42,6 +42,12 @@ try:
 except ImportError as e:
     print(f"Failed to load assignment_evaluation router: {e}")
 
+try:
+    from project_evaluation.routes.project_eval_routes import router as project_eval_router
+    app.include_router(project_eval_router)
+except ImportError as e:
+    print(f"Failed to load project_evaluation router: {e}")
+
 
 @app.get("/health")
 async def health_check():
