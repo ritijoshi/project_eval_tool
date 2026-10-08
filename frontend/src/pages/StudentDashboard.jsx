@@ -20,6 +20,7 @@ import {
   Award,
   Trash2,
   Check,
+  FolderGit2,
 } from 'lucide-react';
 import axios from 'axios';
 import Chatbot from '../components/Chatbot';
@@ -1014,6 +1015,15 @@ const StudentDashboard = () => {
             <span className="font-medium">AI Project Evaluation</span>
           </button>
           <button
+            className="flex items-center gap-4 w-full btn-secondary border-none opacity-70 hover:opacity-100"
+            style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
+            onClick={() => navigate('/project-evaluation')}
+            title="View your project evaluation, feedback, progress, and weekly reports."
+          >
+            <FolderGit2 size={20} />
+            <span className="font-medium">Project Evaluation</span>
+          </button>
+          <button
             className={`flex items-center gap-4 w-full ${activeTab === 'learning' ? 'btn-primary shadow-lg' : 'btn-secondary border-none opacity-70 hover:opacity-100'}`}
             style={{ justifyContent: 'flex-start', padding: '14px 20px' }}
             onClick={() => setActiveTab('learning')}
@@ -1138,6 +1148,43 @@ const StudentDashboard = () => {
         {/* DASHBOARD TAB */}
         {activeTab === 'dashboard' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            {/* Project Evaluation Quick Card */}
+            <div className="glass-panel">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div
+                    style={{
+                      width: 40,
+                      height: 40,
+                      borderRadius: 10,
+                      background: 'rgba(99, 102, 241, 0.15)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#818cf8',
+                    }}
+                  >
+                    <FolderGit2 size={22} />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-semibold" style={{ margin: 0 }}>Project Evaluation</h2>
+                    <p style={{ color: 'var(--muted)', fontSize: '0.875rem', margin: '0.2rem 0 0 0' }}>
+                      View your project evaluation, feedback, progress, and weekly reports.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() => navigate('/project-evaluation')}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.875rem', padding: '0.6rem 1.2rem' }}
+                >
+                  <span>Open Evaluation</span>
+                  <ArrowRight size={16} />
+                </button>
+              </div>
+            </div>
+
             <div className="glass-panel">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
                 <h2 className="text-xl font-semibold">Progress Tracking</h2>
