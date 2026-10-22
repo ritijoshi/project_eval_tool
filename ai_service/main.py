@@ -73,6 +73,12 @@ async def readiness_check():
         },
     }
 
+
+@app.get("/diagnostics/config")
+async def configuration_diagnostics():
+    from diagnose_config import build_diagnostics
+    return build_diagnostics()
+
 if not os.environ.get("OPENAI_API_KEY"):
     # In production, load from .env or real environment variables
     os.environ["OPENAI_API_KEY"] = "sk-placeholder"

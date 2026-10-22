@@ -16,7 +16,7 @@ const normalizeCriterionScore = (score, maxScore) => {
   const numericScore = Number(score ?? 0);
   const numericMax = Number(maxScore ?? 0);
   if (!Number.isFinite(numericScore)) return '—';
-  if (numericMax > 0) return Number(((numericScore / numericMax) * 10).toFixed(1));
+  if (numericMax > 0) return Number(numericScore.toFixed(1));
   if (numericScore <= 10) return Number(numericScore.toFixed(1));
   return Number(numericScore.toFixed(1));
 };
@@ -44,6 +44,7 @@ const formatDate = (dateStr) =>
 const statusBadge = (s) => {
   const map = {
     COMPLETED:       { bg: 'rgba(74,222,128,0.12)', border: 'rgba(74,222,128,0.35)', color: '#4ade80' },
+    PARTIAL:         { bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.35)', color: '#fbbf24' },
     FAILED:          { bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.35)', color: '#f87171' },
     EVALUATING:      { bg: 'rgba(251,191,36,0.12)',  border: 'rgba(251,191,36,0.35)',  color: '#fbbf24' },
     UPLOADED:        { bg: 'rgba(148,163,184,0.1)',  border: 'rgba(148,163,184,0.3)', color: '#94a3b8' },
@@ -164,7 +165,7 @@ const AssignmentEvaluation = () => {
               ? `Status: ${data.session.status} · ${data.session.processedStudents ?? 0}/${data.session.totalStudents ?? 0} students`
               : 'Processing…'
           );
-          if (['COMPLETED', 'FAILED'].includes(data.session?.status)) return;
+          if (['COMPLETED', 'PARTIAL', 'FAILED'].includes(data.session?.status)) return;
         }
         if (!cancelled) {
           pollingRef.current = setTimeout(poll, 4000);
@@ -373,8 +374,8 @@ const AssignmentEvaluation = () => {
                 style={{ width: '100%' }}
               >
                 {!assignmentId && <option value="">Select assignment…</option>}
-                {assignments.map((a) => (
-                  <option key={a._id} value={a._id}>{a.title || a.name || 'Assignment'}</option>
+                {assignments.map((a, index) => (
+                  <option key={`${a._id || 'assignment'}-${index}`} value={a._id}>{a.title || a.name || 'Assignment'}</option>
                 ))}
                 {!loadingMeta && assignments.length === 0 && (
                   <option disabled value="">No assignments in this course</option>

@@ -172,7 +172,7 @@ exports.startBatchEvalSession = async (req, res, next) => {
 
     const backendBase = (process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/$/, '');
 
-    axios.post(`${AI_BASE}/eval/batch-assignment`, {
+    const batchPayload = {
       sessionId: String(session._id),
       rubricPath: rubricFile.path,
       submissionsZipPath: submissionsZip.path,
@@ -182,13 +182,41 @@ exports.startBatchEvalSession = async (req, res, next) => {
         : '',
       modelAnswer: assignment?.extractedAssignmentText || '',
       webhookUrl: `${backendBase}/api/assignment-eval/webhook`,
-    }).catch((err) => {
-      console.error('Failed to trigger assignment AI batch eval:', err.response?.data || err.message);
-      AssignmentEvalSession.findByIdAndUpdate(session._id, {
+    };
+
+    const queueBatchEvaluation = async () => {
+      let lastError;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          await axios.post(`${AI_BASE}/eval/batch-assignment`, batchPayload, {
+            timeout: 15000,
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          const statusCode = error.response?.status;
+          const retryable = !statusCode || statusCode === 408 || statusCode === 429 || statusCode >= 500;
+          if (!retryable || attempt === 3) break;
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+        }
+      }
+
+      const providerDetail = lastError?.response?.data?.detail;
+      const detail = providerDetail || lastError?.response?.data?.message || lastError?.message || 'Unknown AI service error';
+      console.error('Failed to trigger assignment AI batch eval:', {
+        url: `${AI_BASE}/eval/batch-assignment`,
+        detail,
+        status: lastError?.response?.status || null,
+      });
+      await AssignmentEvalSession.findByIdAndUpdate(session._id, {
         status: 'FAILED',
-        'failureMetadata.errorMessage': 'Could not reach AI service',
+        'failureMetadata.errorMessage': `AI service queue failed: ${detail}`,
         'failureMetadata.failedStage': 'QUEUE',
       }).exec();
+    };
+
+    queueBatchEvaluation().catch((error) => {
+      console.error('Failed to record assignment AI queue failure:', error.message);
     });
 
     return res.status(202).json({
@@ -203,7 +231,7 @@ exports.startBatchEvalSession = async (req, res, next) => {
 
 exports.handleAssignmentWebhook = async (req, res, next) => {
   try {
-    const { sessionId, status, processedStudents, totalStudents, progressPercent, latestResult, errorInfo, results } = req.body;
+    const { sessionId, status, processedStudents, totalStudents, progressPercent, latestResult, errorInfo, results, rubricCriteria } = req.body;
 
     const session = await AssignmentEvalSession.findById(sessionId);
     if (!session) {
@@ -211,7 +239,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
     }
 
     const incomingStatus = status || session.status;
-    if (!['COMPLETED', 'FAILED'].includes(incomingStatus)) {
+    if (!['COMPLETED', 'PARTIAL', 'FAILED'].includes(incomingStatus)) {
       session.status = incomingStatus;
     }
     if (typeof totalStudents === 'number') session.totalStudents = totalStudents;
@@ -223,11 +251,30 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
       session.failureMetadata.errorMessage = errorInfo.message || session.failureMetadata.errorMessage || '';
       session.failureMetadata.failedStage = errorInfo.stage || session.failureMetadata.failedStage || '';
     }
+    if (Array.isArray(rubricCriteria) && session.rubricCriteria.length === 0) {
+      session.rubricCriteria = rubricCriteria.map((criterion) => ({
+        title: criterion.name || criterion.title || 'Criterion',
+        maxScore: Number(criterion.maxScore ?? criterion.max_score ?? 0),
+        description: criterion.description || '',
+      }));
+    }
 
     await session.save();
 
     let savedResult = null;
-    if (latestResult) {
+    // The final webhook contains the complete results array. Persisting its
+    // latestResult separately would create a duplicate row for that student.
+    if (latestResult && (!Array.isArray(results) || results.length === 0)) {
+      const latestStudentName = latestResult.studentName || 'Unknown';
+      const latestFileName = latestResult.fileName || latestResult.file_name || '';
+      const existingLatestResult = await AssignmentStudentResult.findOne({
+        sessionId: session._id,
+        studentName: latestStudentName,
+        fileName: latestFileName,
+      }).select('_id').lean();
+      if (existingLatestResult) {
+        savedResult = existingLatestResult;
+      } else {
       const normalizedBreakdown = normalizeScoreBreakdown(latestResult.scoreBreakdown || latestResult.aiEvaluation?.scoreBreakdown || {});
       const overallScore = latestResult.success === false
         ? null
@@ -264,6 +311,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         errorMessage: latestResult.errorMessage || '',
         evaluatedAt: new Date(),
       });
+      }
 
       const count = await AssignmentStudentResult.countDocuments({ sessionId: session._id });
       if (count !== session.processedStudents) {
@@ -335,7 +383,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
       await session.save();
     }
 
-    if (['COMPLETED', 'FAILED'].includes(incomingStatus)) {
+    if (['COMPLETED', 'PARTIAL', 'FAILED'].includes(incomingStatus)) {
       session.status = incomingStatus;
       await session.save();
     }
@@ -362,7 +410,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         } : null,
       });
 
-      if (incomingStatus === 'COMPLETED' || incomingStatus === 'FAILED') {
+      if (['COMPLETED', 'PARTIAL', 'FAILED'].includes(incomingStatus)) {
         session.processedStudents = await AssignmentStudentResult.countDocuments({ sessionId: session._id });
         session.progressPercent = incomingStatus === 'COMPLETED' ? 100 : session.progressPercent;
         await session.save();
@@ -378,7 +426,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         });
 
         // Auto-generate and persist the Excel report (non-blocking)
-        if (incomingStatus === 'COMPLETED' && session.courseId) {
+        if (['COMPLETED', 'PARTIAL'].includes(incomingStatus) && session.courseId) {
           try {
             const reportBuffer = await generateExcelReport(session, finalResults);
             const reportDir = path.join(__dirname, '..', 'reports', 'assignments', session.courseId.toString());
@@ -406,7 +454,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         }
 
         // Emit leaderboard on completion (non-blocking)
-        if (incomingStatus === 'COMPLETED') {
+        if (['COMPLETED', 'PARTIAL'].includes(incomingStatus)) {
           try {
             const { buildAssignmentLeaderboard } = require('./assignmentLeaderboardController');
             const { ranked, total } = buildAssignmentLeaderboard(finalResults, session.rubricCriteria || []);
@@ -845,4 +893,3 @@ exports.deleteReport = async (req, res, next) => {
     next(error);
   }
 };
-

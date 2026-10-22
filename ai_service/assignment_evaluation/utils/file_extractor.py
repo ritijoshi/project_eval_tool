@@ -37,17 +37,41 @@ def extract_text_from_submission(filepath: str, filename: str = '') -> dict:
             language = lang
             break
 
-    if lower_name.endswith('.ipynb'):
+    notebook_candidate = lower_name.endswith('.ipynb')
+    if not notebook_candidate:
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='strict') as handle:
+                candidate_payload = json.load(handle)
+                notebook_candidate = isinstance(candidate_payload, dict) and 'cells' in candidate_payload
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            notebook_candidate = False
+
+    if notebook_candidate:
         try:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as handle:
                 payload = json.load(handle)
             parts = []
-            for cell in payload.get('cells', []):
+            for index, cell in enumerate(payload.get('cells', []), start=1):
                 source = cell.get('source', [])
                 if isinstance(source, list):
-                    parts.append(''.join(source))
+                    source_text = ''.join(source)
                 elif isinstance(source, str):
-                    parts.append(source)
+                    source_text = source
+                else:
+                    source_text = ''
+                cell_parts = [f'## Notebook cell {index}', source_text]
+                outputs = cell.get('outputs', [])
+                for output in outputs if isinstance(outputs, list) else []:
+                    if isinstance(output, dict) and output.get('text'):
+                        output_text = output['text']
+                        cell_parts.append('OUTPUT:\n' + (
+                            ''.join(output_text) if isinstance(output_text, list) else str(output_text)
+                        ))
+                    if isinstance(output, dict) and output.get('ename'):
+                        cell_parts.append(
+                            f"ERROR: {output.get('ename')}: {output.get('evalue', '')}"
+                        )
+                parts.append('\n'.join(part for part in cell_parts if part))
             text = '\n\n'.join(parts)
             detected_type = 'code' if any(text.strip()) else 'text'
             return {'text': text, 'detectedType': detected_type, 'language': language}
@@ -81,6 +105,12 @@ def extract_text_from_submission(filepath: str, filename: str = '') -> dict:
     if not text:
         text = extract_text_from_file(filepath, filename or os.path.basename(filepath)) or ''
         detected_type = detect_submission_type(text, filename or filepath)
+    if not text and not lower_name.endswith(('.zip', '.pdf', '.docx', '.pptx')):
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as handle:
+                text = handle.read().strip()
+        except OSError:
+            text = ''
 
     if not language and lower_name.endswith(('.py', '.java', '.c', '.cpp', '.js', '.ts', '.sql')):
         language = CODE_EXTENSIONS.get(os.path.splitext(lower_name)[1])

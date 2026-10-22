@@ -1,7 +1,10 @@
 import asyncio
 import json
+import math
 import os
 import re
+import shutil
+import zipfile
 from datetime import datetime
 
 import httpx
@@ -15,11 +18,67 @@ except ImportError:
     pass
 
 from assignment_evaluation.utils.file_extractor import extract_text_from_submission
-from summary_evaluation.services.groq_circuit import GroqCircuitBreaker
+from summary_evaluation.services.groq_circuit import (
+    GroqCircuitBreaker,
+    is_request_too_large_error,
+)
 
 GROQ_EVAL_CONCURRENCY = 3
 DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b'
 RETIRED_GROQ_MODELS = {'llama-3.1-8b-instant'}
+PROMPT_CHAR_BUDGET = 15000
+COMPACT_PROMPT_CHAR_BUDGET = 10000
+MINIMAL_PROMPT_CHAR_BUDGET = 7000
+MAX_COMPLETION_TOKENS = 800
+
+
+def _truncate_for_prompt(value: str, max_chars: int) -> str:
+    """Keep both the beginning and end of long source files and documents."""
+    text = str(value or '')
+    if len(text) <= max_chars:
+        return text
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    omitted = len(text) - max_chars
+    return (
+        f'{text[:head_chars]}\n\n'
+        f'[... {omitted} characters omitted to fit the model context ...]\n\n'
+        f'{text[-tail_chars:]}'
+    )
+
+
+def _prompt_values(
+    rubric_package: dict,
+    criteria: list,
+    student_name: str,
+    file_name: str,
+    text: str,
+    budget: int = PROMPT_CHAR_BUDGET,
+) -> dict:
+    """Build a bounded prompt so one submission cannot exhaust Groq TPM."""
+    limits = {
+        'assignmentQuestion': min(1800, budget // 8),
+        'rubric': min(4500, budget // 3),
+        'criteria': min(2200, budget // 6),
+        'modelAnswer': min(3500, budget // 4),
+        'studentAnswer': budget,
+    }
+    values = {
+        'assignmentQuestion': rubric_package.get('assignmentQuestion', 'Not provided'),
+        'rubric': rubric_package.get('rubricText', 'Not provided'),
+        'criteria': json.dumps(criteria, ensure_ascii=False),
+        'modelAnswer': rubric_package.get('modelAnswer', 'Not provided'),
+        'studentName': student_name,
+        'fileName': file_name,
+        'studentAnswer': text,
+    }
+    for key, limit in limits.items():
+        values[key] = _truncate_for_prompt(values[key], limit)
+
+    fixed_chars = sum(len(values[key]) for key in limits if key != 'studentAnswer')
+    student_limit = max(500, budget - fixed_chars - 128)
+    values['studentAnswer'] = _truncate_for_prompt(values['studentAnswer'], student_limit)
+    return values
 
 
 def _groq_model():
@@ -55,18 +114,93 @@ def _normalize_score_breakdown(raw: dict):
     return normalized
 
 
+def _response_content(raw):
+    """Return text from LangChain string or content-block responses."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        parts = []
+        for block in raw:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get('text'), str):
+                parts.append(block['text'])
+        return ''.join(parts)
+    return str(raw or '')
+
+
 def _parse_json_object(raw):
     if isinstance(raw, dict):
         return raw
-    text = str(raw or '').strip()
-    text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = _response_content(raw).strip()
+    if not text:
+        raise ValueError('LLM response was empty')
+    text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*```$', '', text).strip()
+    decoder = json.JSONDecoder()
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r'\{.*\}', text, flags=re.DOTALL)
-        if not match:
-            raise ValueError('LLM response did not contain a JSON object')
-        return json.loads(match.group(0))
+    except json.JSONDecodeError as first_error:
+        # Permit harmless prose around one JSON object, but never accept a
+        # partially decoded or non-object response.
+        for start, character in enumerate(text):
+            if character != '{':
+                continue
+            try:
+                value, end = decoder.raw_decode(text[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        if '{' not in text:
+            raise ValueError('LLM response did not contain a JSON object') from first_error
+        raise ValueError('LLM response contained malformed JSON') from first_error
+
+
+def _validate_llm_payload(payload, criteria):
+    if not isinstance(payload, dict):
+        raise ValueError('LLM response must be a JSON object')
+    returned = payload.get('criteria')
+    if not isinstance(returned, list):
+        raise ValueError('LLM response is missing the criteria array')
+    by_name = {}
+    for item in returned:
+        if not isinstance(item, dict) or not str(item.get('name', '')).strip():
+            raise ValueError('Each criterion must have a name')
+        key = str(item['name']).strip().casefold()
+        if key in by_name:
+            raise ValueError(f'Duplicate criterion: {item["name"]}')
+        by_name[key] = item
+
+    expected = {str(item['name']).strip().casefold() for item in criteria}
+    missing = expected - by_name.keys()
+    if missing:
+        raise ValueError(f'Missing rubric criteria: {", ".join(sorted(missing))}')
+    for criterion in criteria:
+        item = by_name[str(criterion['name']).strip().casefold()]
+        try:
+            score = float(item.get('score'))
+            maximum = float(criterion['maxScore'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f'Invalid score for criterion {criterion["name"]}') from exc
+        if not math.isfinite(score) or score < 0 or score > maximum:
+            raise ValueError(f'Score for criterion {criterion["name"]} must be between 0 and {maximum}')
+        if not isinstance(item.get('feedback'), str) or not item['feedback'].strip():
+            raise ValueError(f'Criterion {criterion["name"]} requires feedback')
+    confidence = payload.get('confidence')
+    try:
+        confidence = float(confidence)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('confidence must be a number between 0 and 1') from exc
+    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        raise ValueError('confidence must be a number between 0 and 1')
+    for field in ('strengths', 'weakAreas', 'mistakes', 'missingConcepts', 'missingKeyPoints',
+                  'requiredConcepts', 'conceptsCovered'):
+        if not isinstance(payload.get(field), list):
+            raise ValueError(f'{field} must be an array')
+    if not isinstance(payload.get('feedback'), str) or not payload['feedback'].strip():
+        raise ValueError('feedback is required')
+    return payload
 
 
 def parse_rubric(rubric_text: str):
@@ -74,7 +208,8 @@ def parse_rubric(rubric_text: str):
     text = (rubric_text or '').strip()
     criteria = []
     pattern = re.compile(
-        r'^(?:\d+[.)]\s*|[-*]\s*)?(.+?)\s*[-:]\s*(\d+(?:\.\d+)?)\s*(?:points?|marks?)\b',
+        r'^(?:\d+[.)]\s*|[-*]\s*)?(.+?)\s*(?:[-:]\s*|(?:\u2014|\u2013)\s*)'
+        r'(\d+(?:\.\d+)?)\s*(?:points?|marks?)\b',
         re.IGNORECASE,
     )
     for line in (line.strip() for line in text.splitlines() if line.strip()):
@@ -82,9 +217,25 @@ def parse_rubric(rubric_text: str):
         if not match:
             continue
         name = re.sub(r'^(?:criteria|criterion)\s*:?\s*', '', match.group(1), flags=re.IGNORECASE).strip()
-        description = line[match.end():].strip(' -:')
+        description = line[match.end():].strip(' -:\u2013\u2014')
         if name and not name.lower().startswith(('total score', 'total marks')):
             criteria.append({'name': name, 'maxScore': float(match.group(2)), 'description': description})
+
+    if not criteria:
+        part_pattern = re.compile(
+            r'\bPart\s+([A-Z])\s*[\s:.)\-–—]*'
+            r'([A-Za-z][^:\n()]{2,100}?)\s*'
+            r'(?:\(\s*|\s*[-:]\s*|\s+)'
+            r'(\d+(?:\.\d+)?)\s*(?:points?|marks?)\b',
+            re.IGNORECASE,
+        )
+        for match in part_pattern.finditer(text):
+            name = f'Part {match.group(1).upper()} — {match.group(2).strip(" -–—:")}'
+            criteria.append({
+                'name': name,
+                'maxScore': float(match.group(3)),
+                'description': '',
+            })
 
     if not criteria:
         total_match = re.search(r'(?:total\s*(?:score|marks?)|out\s*of)\s*[:=-]?\s*(\d+(?:\.\d+)?)', text, re.IGNORECASE)
@@ -93,9 +244,81 @@ def parse_rubric(rubric_text: str):
     return criteria
 
 
+SUPPORTED_SUBMISSION_EXTENSIONS = {
+    '.ipynb', '.pdf', '.docx', '.pptx', '.txt', '.md', '.py', '.js', '.ts',
+    '.tsx', '.jsx', '.java', '.c', '.cpp', '.cs', '.sql', '.json', '.csv',
+    '.html', '.css', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.zip',
+}
+
+
+def _safe_extract_zip(zip_path: str, destination: str):
+    destination_path = os.path.abspath(destination)
+    with zipfile.ZipFile(zip_path, 'r') as archive:
+        members = []
+        for member in archive.infolist():
+            member_path = os.path.abspath(os.path.join(destination_path, member.filename))
+            if os.path.commonpath((destination_path, member_path)) != destination_path:
+                raise ValueError(f'Unsafe archive path: {member.filename}')
+            if member.is_dir():
+                continue
+            if os.path.splitext(member.filename)[1].lower() in SUPPORTED_SUBMISSION_EXTENSIONS:
+                members.append(member.filename)
+                os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                with archive.open(member) as source, open(member_path, 'wb') as target:
+                    shutil.copyfileobj(source, target)
+        return members
+
+
+def _submission_groups(root: str, extracted_files):
+    groups = {}
+    file_stems = {}
+    for relative_path in extracted_files:
+        file_stem = os.path.splitext(os.path.basename(relative_path))[0]
+        if re.search(r'[_-]assignsubmission(?:_file)?$', file_stem, re.IGNORECASE):
+            file_stems[relative_path] = re.sub(
+                r'[_-]assignsubmission(?:_file)?$',
+                '',
+                file_stem,
+                flags=re.IGNORECASE,
+            ).strip(' _-') or file_stem
+
+    for relative_path in extracted_files:
+        path = os.path.join(root, relative_path)
+        parts = relative_path.replace('\\', '/').split('/')
+        if relative_path in file_stems:
+            student_key = file_stems[relative_path]
+        elif len(parts) > 1:
+            student_key = parts[0]
+        else:
+            student_key = os.path.splitext(parts[0])[0].rsplit('_', 1)[0] or parts[0]
+        groups.setdefault(student_key, []).append(path)
+    return groups
+
+
+def _extract_group_text(paths):
+    parts = []
+    detected_type = 'text'
+    for path in sorted(paths):
+        result = extract_text_from_submission(path, os.path.basename(path))
+        content = (result.get('text') or '').strip()
+        if content:
+            parts.append(f'### {os.path.basename(path)}\n{content[:20000]}')
+            if result.get('detectedType') == 'code':
+                detected_type = 'code'
+    return '\n\n'.join(parts).strip(), detected_type
+
+
 def _llm_enabled():
     key = os.environ.get('GROQ_API_KEY', '').strip()
     return bool(key) and key != 'gsk-placeholder'
+
+
+def _is_transient_llm_error(exc):
+    message = str(exc).lower()
+    return any(token in message for token in (
+        '429', 'rate limit', 'timeout', 'timed out', 'temporarily unavailable',
+        'service unavailable', 'connection reset', 'connection error', '502', '503', '504',
+    ))
 
 
 async def evaluate_single_submission_with_llm(
@@ -122,7 +345,12 @@ async def evaluate_single_submission_with_llm(
         'studentAnswer': text,
     }, ensure_ascii=False))
 
-    llm = ChatGroq(model_name=_groq_model(), temperature=0.0)
+    llm = ChatGroq(
+        model_name=_groq_model(),
+        temperature=0.0,
+        max_tokens=max(MAX_COMPLETION_TOKENS, 1600),
+        model_kwargs={'response_format': {'type': 'json_object'}},
+    )
     prompt = ChatPromptTemplate.from_messages([
         ('system', '''You are an academic assignment evaluator. Evaluate exactly one student's submission using the assignment question, rubric, and reference answer.
 Return ONLY valid JSON. Do not copy rubric text into concepts. Do not invent criteria. Include every rubric criterion exactly once, even when its score is zero.
@@ -150,16 +378,38 @@ STUDENT SUBMISSION:
 
 Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence.'''),
     ])
-    response = await asyncio.to_thread(llm.invoke, prompt.format_messages(
-        assignmentQuestion=rubric_package.get('assignmentQuestion', 'Not provided'),
-        rubric=rubric_package.get('rubricText', 'Not provided'),
-        criteria=json.dumps(criteria, ensure_ascii=False),
-        modelAnswer=rubric_package.get('modelAnswer', 'Not provided'),
-        studentName=student_name,
-        fileName=file_name,
-        studentAnswer=text,
-    ))
-    payload = _parse_json_object(getattr(response, 'content', response))
+    prompt_values = _prompt_values(rubric_package, criteria, student_name, file_name, text)
+    response = None
+    payload = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            values = prompt_values if attempt == 0 else _prompt_values(
+                rubric_package, criteria, student_name, file_name, text,
+                budget=COMPACT_PROMPT_CHAR_BUDGET if attempt == 1 else MINIMAL_PROMPT_CHAR_BUDGET,
+            )
+            if attempt:
+                values['studentAnswer'] += (
+                    '\n\nCORRECTION: Your previous response was rejected because it was '
+                    f'{last_error}. Return one complete JSON object matching the requested schema.'
+                )
+            response = await asyncio.to_thread(llm.invoke, prompt.format_messages(**values))
+            payload = _validate_llm_payload(
+                _parse_json_object(getattr(response, 'content', response)), criteria
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            retryable = (
+                is_request_too_large_error(exc)
+                or isinstance(exc, ValueError)
+                or _is_transient_llm_error(exc)
+            )
+            if attempt == 2 or not retryable:
+                raise
+            await asyncio.sleep(2 ** attempt)
+    if payload is None:
+        raise ValueError(f'LLM evaluation failed validation: {last_error}')
     returned = {str(item.get('name', '')).strip().lower(): item for item in payload.get('criteria', []) if isinstance(item, dict)}
     breakdown = {}
     score_total = 0.0
@@ -168,17 +418,23 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requ
         name = criterion['name']
         max_score = float(criterion['maxScore'])
         item = returned.get(name.lower(), {})
-        score = max(0.0, min(max_score, float(item.get('score', 0) or 0)))
+        score = float(item['score'])
         breakdown[name] = {'score': round(score, 2), 'maxScore': round(max_score, 2), 'reason': str(item.get('feedback', '')).strip()}
         score_total += score
         max_total += max_score
 
-    overall_score = round((score_total / max_total) * 100, 2) if max_total else 0
+    overall_score = round(score_total, 2)
     return {
         'score': overall_score,
         'overallScore': overall_score,
-        'maxScore': 100,
-        'gradeLabel': 'A' if overall_score >= 85 else 'B' if overall_score >= 70 else 'C' if overall_score >= 55 else 'D' if overall_score >= 40 else 'F',
+        'maxScore': round(max_total, 2),
+        'gradeLabel': (
+            'A' if (overall_score / max_total * 100 if max_total else 0) >= 85
+            else 'B' if (overall_score / max_total * 100 if max_total else 0) >= 70
+            else 'C' if (overall_score / max_total * 100 if max_total else 0) >= 55
+            else 'D' if (overall_score / max_total * 100 if max_total else 0) >= 40
+            else 'F'
+        ),
         'confidence': payload.get('confidence'),
         'scoreBreakdown': breakdown,
         'requiredConcepts': payload.get('requiredConcepts', []),
@@ -215,17 +471,18 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
                 except Exception:
                     pass
 
-        import zipfile
-        with zipfile.ZipFile(zip_path, 'r') as archive:
-            archive.extractall(temp_dir)
-
-        files = []
-        for root, _, filenames in os.walk(temp_dir):
-            for filename in filenames:
-                if not filename.startswith('.'):
-                    files.append(os.path.join(root, filename))
-
-        total_students = len(files)
+        extracted_files = _safe_extract_zip(zip_path, temp_dir)
+        student_groups = _submission_groups(temp_dir, extracted_files)
+        total_students = len(student_groups)
+        print(json.dumps({
+            'stage': 'archive_discovery',
+            'supportedFileCount': len(extracted_files),
+            'studentCount': total_students,
+            'studentFiles': {
+                student: [os.path.relpath(path, temp_dir) for path in paths]
+                for student, paths in student_groups.items()
+            },
+        }, ensure_ascii=False))
 
         await _broadcast(webhook_url, {
             'sessionId': session_id,
@@ -238,6 +495,19 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
         if os.path.exists(rubric_path):
             rubric_result = extract_text_from_submission(rubric_path, os.path.basename(rubric_path))
             rubric_text = rubric_result.get('text', '')
+        if not rubric_text.strip():
+            raise ValueError('Rubric file is missing or contains no extractable text')
+        if not extracted_files:
+            with zipfile.ZipFile(zip_path, 'r') as archive:
+                archive_entries = [
+                    name for name in archive.namelist()
+                    if not name.endswith('/')
+                ]
+            preview = ', '.join(archive_entries[:10]) or '(archive is empty)'
+            raise ValueError(
+                'Submission archive contains no supported student files. '
+                f'Found entries: {preview}'
+            )
 
         parsed_criteria = parse_rubric(rubric_text)
         rubric_package = {
@@ -249,26 +519,25 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
         }
 
         results = []
-        for index, file_path in enumerate(files, start=1):
+        for index, (student_name, file_paths) in enumerate(student_groups.items(), start=1):
+            file_name = ', '.join(os.path.relpath(path, temp_dir) for path in file_paths)
             try:
-                file_name = os.path.basename(file_path)
-                student_name = os.path.splitext(file_name)[0]
-                extracted = extract_text_from_submission(file_path, file_name)
-                student_text = extracted.get('text', '')
+                student_text, detected_type = _extract_group_text(file_paths)
+                if not student_text:
+                    raise ValueError(f'No extractable content in submission: {file_name}')
                 result = await evaluate_single_submission_with_llm(student_text, rubric_package, assignment_type, student_name, file_name)
                 result['studentName'] = student_name
                 result['fileName'] = file_name
                 result['rollNumber'] = 'UNKNOWN'
                 result['rollNo'] = 'UNKNOWN'
                 result['submissionContent'] = student_text[:10000]
-                result['submissionType'] = assignment_type or extracted.get('detectedType', 'text')
+                result['submissionType'] = assignment_type or detected_type
                 result['maxScore'] = result.get('maxScore', 100)
                 result['scoreBreakdown'] = _normalize_score_breakdown(result.get('scoreBreakdown', {}))
                 results.append(result)
             except Exception as exc:
-                file_name = os.path.basename(file_path)
                 results.append({
-                    'studentName': os.path.splitext(file_name)[0],
+                    'studentName': student_name,
                     'fileName': file_name,
                     'rollNumber': 'UNKNOWN',
                     'rollNo': 'UNKNOWN',
@@ -289,15 +558,23 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
                 'latestResult': results[-1],
             })
 
+        completed_count = sum(1 for result in results if result.get('success') is not False)
+        failed_count = len(results) - completed_count
+        final_status = 'COMPLETED' if failed_count == 0 else 'PARTIAL'
         await _broadcast(webhook_url, {
             'sessionId': session_id,
-            'status': 'COMPLETED',
+            'status': final_status,
             'processedStudents': len(results),
             'totalStudents': total_students,
             'progressPercent': 100,
             'results': results,
+            'rubricCriteria': parsed_criteria,
+            'errorInfo': (
+                {'message': f'{failed_count} of {len(results)} submissions failed', 'stage': 'STUDENT_EVALUATION'}
+                if failed_count else None
+            ),
         })
-        return {'status': 'COMPLETED', 'results': results}
+        return {'status': final_status, 'results': results}
     except Exception as exc:
         await _broadcast(webhook_url, {
             'sessionId': session_id,

@@ -40,7 +40,7 @@ const assignmentEvalSessionSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['UPLOADED', 'EXTRACTING', 'PARSING_RUBRIC', 'EVALUATING', 'COMPLETED', 'FAILED'],
+      enum: ['UPLOADED', 'EXTRACTING', 'PARSING_RUBRIC', 'EVALUATING', 'COMPLETED', 'PARTIAL', 'FAILED'],
       default: 'UPLOADED',
     },
     totalStudents: {
