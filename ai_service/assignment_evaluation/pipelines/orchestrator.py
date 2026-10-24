@@ -247,7 +247,15 @@ def parse_rubric(rubric_text: str):
 SUPPORTED_SUBMISSION_EXTENSIONS = {
     '.ipynb', '.pdf', '.docx', '.pptx', '.txt', '.md', '.py', '.js', '.ts',
     '.tsx', '.jsx', '.java', '.c', '.cpp', '.cs', '.sql', '.json', '.csv',
-    '.html', '.css', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp', '.zip',
+    '.html', '.css', '.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp',
+}
+
+MAX_ARCHIVE_FILES = 1000
+MAX_ARCHIVE_MEMBER_SIZE = 25 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_SIZE = 500 * 1024 * 1024
+IGNORED_ARCHIVE_BASENAMES = {
+    'readme', 'readme.txt', 'readme.md', 'metadata', 'metadata.json',
+    '.ds_store', 'thumbs.db',
 }
 
 
@@ -255,14 +263,39 @@ def _safe_extract_zip(zip_path: str, destination: str):
     destination_path = os.path.abspath(destination)
     with zipfile.ZipFile(zip_path, 'r') as archive:
         members = []
+        seen_paths = set()
+        total_size = 0
         for member in archive.infolist():
-            member_path = os.path.abspath(os.path.join(destination_path, member.filename))
-            if os.path.commonpath((destination_path, member_path)) != destination_path:
+            member_name = member.filename.replace('\\', '/')
+            normalized_name = os.path.normpath(member_name)
+            if (
+                not member_name
+                or member_name.startswith(('/', '\\'))
+                or re.match(r'^[A-Za-z]:', member_name)
+                or normalized_name in ('.', '..')
+                or normalized_name.startswith(f'..{os.sep}')
+            ):
                 raise ValueError(f'Unsafe archive path: {member.filename}')
             if member.is_dir():
                 continue
-            if os.path.splitext(member.filename)[1].lower() in SUPPORTED_SUBMISSION_EXTENSIONS:
-                members.append(member.filename)
+            if normalized_name in seen_paths:
+                raise ValueError(f'Duplicate archive path: {member.filename}')
+            seen_paths.add(normalized_name)
+            if member.file_size > MAX_ARCHIVE_MEMBER_SIZE:
+                raise ValueError(f'Archive member exceeds size limit: {member.filename}')
+            total_size += member.file_size
+            if total_size > MAX_ARCHIVE_TOTAL_SIZE:
+                raise ValueError('Archive exceeds the total extraction size limit')
+            if len(members) >= MAX_ARCHIVE_FILES:
+                raise ValueError('Archive contains too many files')
+
+            member_path = os.path.abspath(os.path.join(destination_path, normalized_name))
+            if os.path.commonpath((destination_path, member_path)) != destination_path:
+                raise ValueError(f'Unsafe archive path: {member.filename}')
+            if os.path.basename(normalized_name).casefold() in IGNORED_ARCHIVE_BASENAMES:
+                continue
+            if os.path.splitext(normalized_name)[1].lower() in SUPPORTED_SUBMISSION_EXTENSIONS:
+                members.append(normalized_name)
                 os.makedirs(os.path.dirname(member_path), exist_ok=True)
                 with archive.open(member) as source, open(member_path, 'wb') as target:
                     shutil.copyfileobj(source, target)
@@ -270,42 +303,17 @@ def _safe_extract_zip(zip_path: str, destination: str):
 
 
 def _submission_groups(root: str, extracted_files):
+    # Every supported archive member is an independent submission. The
+    # directory containing a file is transport structure, not student identity.
     groups = {}
-    file_stems = {}
     for relative_path in extracted_files:
-        file_stem = os.path.splitext(os.path.basename(relative_path))[0]
-        if re.search(r'[_-]assignsubmission(?:_file)?$', file_stem, re.IGNORECASE):
-            file_stems[relative_path] = re.sub(
-                r'[_-]assignsubmission(?:_file)?$',
-                '',
-                file_stem,
-                flags=re.IGNORECASE,
-            ).strip(' _-') or file_stem
-
-    for relative_path in extracted_files:
-        path = os.path.join(root, relative_path)
-        parts = relative_path.replace('\\', '/').split('/')
-        if relative_path in file_stems:
-            student_key = file_stems[relative_path]
-        elif len(parts) > 1:
-            student_key = parts[0]
-        else:
-            student_key = os.path.splitext(parts[0])[0].rsplit('_', 1)[0] or parts[0]
-        groups.setdefault(student_key, []).append(path)
+        normalized_path = relative_path.replace('\\', '/')
+        groups[normalized_path] = [os.path.join(root, normalized_path)]
     return groups
 
 
-def _extract_group_text(paths):
-    parts = []
-    detected_type = 'text'
-    for path in sorted(paths):
-        result = extract_text_from_submission(path, os.path.basename(path))
-        content = (result.get('text') or '').strip()
-        if content:
-            parts.append(f'### {os.path.basename(path)}\n{content[:20000]}')
-            if result.get('detectedType') == 'code':
-                detected_type = 'code'
-    return '\n\n'.join(parts).strip(), detected_type
+def _student_label(relative_path: str) -> str:
+    return os.path.splitext(os.path.basename(relative_path))[0] or relative_path
 
 
 def _llm_enabled():
@@ -519,10 +527,14 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
         }
 
         results = []
-        for index, (student_name, file_paths) in enumerate(student_groups.items(), start=1):
-            file_name = ', '.join(os.path.relpath(path, temp_dir) for path in file_paths)
+        for index, (submission_path, file_paths) in enumerate(student_groups.items(), start=1):
+            file_name = submission_path
+            student_name = _student_label(file_name)
             try:
-                student_text, detected_type = _extract_group_text(file_paths)
+                source_path = file_paths[0]
+                extracted = extract_text_from_submission(source_path, file_name)
+                student_text = (extracted.get('text') or '').strip()
+                detected_type = extracted.get('detectedType', 'text')
                 if not student_text:
                     raise ValueError(f'No extractable content in submission: {file_name}')
                 result = await evaluate_single_submission_with_llm(student_text, rubric_package, assignment_type, student_name, file_name)

@@ -332,7 +332,10 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         const aiConfidence = safeNumberOrNull(result.confidence ?? result.aiEvaluation?.confidence ?? result.overallConfidence);
         return {
           updateOne: {
-            filter: { sessionId: session._id, rollNumber: result.rollNumber || result.rollNo || 'UNKNOWN', studentName: result.studentName || 'Unknown' },
+            filter: {
+              sessionId: session._id,
+              fileName: result.fileName || result.file_name || '',
+            },
             update: {
               $set: {
                 studentName: result.studentName || 'Unknown',

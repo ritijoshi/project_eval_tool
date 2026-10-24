@@ -50,6 +50,8 @@ def extract_text_from_submission(filepath: str, filename: str = '') -> dict:
         try:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as handle:
                 payload = json.load(handle)
+            if not isinstance(payload, dict) or not isinstance(payload.get('cells'), list):
+                raise ValueError(f'Invalid Jupyter notebook structure: {filename or filepath}')
             parts = []
             for index, cell in enumerate(payload.get('cells', []), start=1):
                 source = cell.get('source', [])
@@ -75,6 +77,10 @@ def extract_text_from_submission(filepath: str, filename: str = '') -> dict:
             text = '\n\n'.join(parts)
             detected_type = 'code' if any(text.strip()) else 'text'
             return {'text': text, 'detectedType': detected_type, 'language': language}
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(f'Invalid Jupyter notebook: {filename or filepath}') from exc
+        except ValueError:
+            raise
         except Exception:
             text = ''
 
