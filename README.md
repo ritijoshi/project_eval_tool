@@ -2,11 +2,17 @@
 
 This application uses a robust microservices architecture spanning three interconnected servers.
 
+## Demo and Viva Preparation
+
+For the complete project explanation, live demo sequence, architecture summary,
+and likely professor questions with answers, see
+[PROJECT_DEMO_AND_VIVA_GUIDE.md](PROJECT_DEMO_AND_VIVA_GUIDE.md).
+
 ## How to Run the Project Locally
 To start the entire application in a **single terminal window**, you can use the super convenient root command:
 
 ### Quick Start
-Open a single terminal at `C:\GenAI-Agent` and run:
+Open a single terminal at `C:\project_eval_tool` and run:
 ```bash
 npm install
 npm start

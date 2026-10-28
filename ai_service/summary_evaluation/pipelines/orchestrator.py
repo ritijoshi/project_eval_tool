@@ -159,6 +159,9 @@ async def process_single_student(
             "feedback": feedback,
             "metrics": metrics,
             "aiEvaluation": ai_evaluation,
+            "needsReview": ai_evaluation.get("needsReview", False),
+            "reviewFlags": ai_evaluation.get("reviewFlags", []),
+            "injectionDetected": ai_evaluation.get("injectionDetected", False),
         }
     except Exception as e:
         log_event("N/A", "Student Eval", "FAILED", filepath)

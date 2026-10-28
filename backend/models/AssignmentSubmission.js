@@ -35,6 +35,11 @@ const evaluationSchema = new mongoose.Schema(
     detailedFeedback: { type: String, default: '' },
     raw: { type: mongoose.Schema.Types.Mixed, default: {} },
     generatedAt: { type: Date, default: Date.now },
+    // ── Guardrail metadata ──────────────────────────────────────────────────
+    needsReview: { type: Boolean, default: false },
+    reviewFlags: { type: [String], default: [] },
+    injectionDetected: { type: Boolean, default: false },
+    retryCount: { type: Number, default: 0 },
   },
   { _id: false }
 );
@@ -89,7 +94,7 @@ const assignmentSubmissionSchema = new mongoose.Schema(
     },
     gradingStatus: {
       type: String,
-      enum: ['pending', 'processing', 'completed', 'failed'],
+      enum: ['pending', 'processing', 'completed', 'failed', 'needs_review'],
       default: 'pending',
       index: true,
     },

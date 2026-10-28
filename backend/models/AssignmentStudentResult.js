@@ -27,7 +27,7 @@ const assignmentStudentResultSchema = new mongoose.Schema(
     submissionContent: { type: String, default: '' },
     evaluationStatus: {
       type: String,
-      enum: ['COMPLETED', 'FAILED'],
+      enum: ['COMPLETED', 'FAILED', 'NEEDS_REVIEW'],
       default: 'COMPLETED',
     },
     score: { type: Number, default: 0 },
@@ -55,6 +55,11 @@ const assignmentStudentResultSchema = new mongoose.Schema(
     fileName: { type: String, default: '' },
     errorMessage: { type: String, default: '' },
     evaluatedAt: { type: Date, default: Date.now },
+    // ── Guardrail metadata ──────────────────────────────────────────────────
+    needsReview: { type: Boolean, default: false },
+    reviewFlags: { type: [String], default: [] },
+    injectionDetected: { type: Boolean, default: false },
+    retryCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

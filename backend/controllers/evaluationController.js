@@ -137,8 +137,14 @@ exports.handleAIWebhook = async (req, res, next) => {
                 metrics: latestResult.metrics || {},
                 aiEvaluation: normalizedAiEvaluation,
                 feedback: latestResult.feedback,
-                evaluationStatus: latestResult.success ? 'COMPLETED' : 'FAILED',
-                errorMessage: latestResult.errorMessage || ''
+                evaluationStatus: latestResult.success
+                    ? (latestResult.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED')
+                    : 'FAILED',
+                errorMessage: latestResult.errorMessage || '',
+                // ── Guardrail metadata ──────────────────────────────────────────────────
+                needsReview: !!(latestResult.needsReview || latestResult.aiEvaluation?.needsReview),
+                reviewFlags: (Array.isArray(latestResult.reviewFlags) && latestResult.reviewFlags.length > 0) ? latestResult.reviewFlags : (Array.isArray(latestResult.aiEvaluation?.reviewFlags) ? latestResult.aiEvaluation.reviewFlags : []),
+                injectionDetected: !!(latestResult.injectionDetected || latestResult.aiEvaluation?.injectionDetected),
             });
 
             const processedCount = await StudentEvaluation.countDocuments({ sessionId });
@@ -188,8 +194,14 @@ exports.handleAIWebhook = async (req, res, next) => {
                                 metrics: result.metrics || {},
                                 aiEvaluation: normalizedAiEvaluation,
                                 feedback: result.feedback,
-                                evaluationStatus: result.success ? 'COMPLETED' : 'FAILED',
-                                errorMessage: result.errorMessage || ''
+                                evaluationStatus: result.success
+                                    ? (result.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED')
+                                    : 'FAILED',
+                                errorMessage: result.errorMessage || '',
+                                // ── Guardrail metadata ──────────────────────────────────────────
+                                needsReview: !!result.needsReview,
+                                reviewFlags: Array.isArray(result.reviewFlags) ? result.reviewFlags : [],
+                                injectionDetected: !!result.injectionDetected,
                             }
                         },
                         upsert: true

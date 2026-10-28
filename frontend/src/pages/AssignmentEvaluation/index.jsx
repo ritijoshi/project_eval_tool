@@ -50,6 +50,7 @@ const statusBadge = (s) => {
     UPLOADED:        { bg: 'rgba(148,163,184,0.1)',  border: 'rgba(148,163,184,0.3)', color: '#94a3b8' },
     PARSING_RUBRIC:  { bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.35)', color: '#818cf8' },
     EXTRACTING:      { bg: 'rgba(129,140,248,0.12)', border: 'rgba(129,140,248,0.35)', color: '#818cf8' },
+    NEEDS_REVIEW:    { bg: 'rgba(251,146,60,0.12)',  border: 'rgba(251,146,60,0.35)',  color: '#fb923c' },
   };
   const style = map[s] || map.UPLOADED;
   return (
