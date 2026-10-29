@@ -20,6 +20,23 @@ from summary_evaluation.services.groq_circuit import (
     should_trip_circuit,
 )
 
+# ---------------------------------------------------------------------------
+# Shared validation guardrails
+# ---------------------------------------------------------------------------
+try:
+    from eval_validation.injection_guard import (
+        scan_for_injection,
+        delimit_student_content,
+        build_injection_safe_system_instruction,
+    )
+    from eval_validation.input_validator import validate_extraction
+    from eval_validation.review_policy import decide_review, EvalStatus
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:
+    _GUARDRAILS_AVAILABLE = False
+    print('[summary_eval] WARNING: eval_validation package not found; guardrails disabled.')
+
+
 _STOPWORDS = {
     "the", "a", "an", "and", "or", "but", "if", "then", "to", "of", "in", "on", "for",
     "with", "as", "by", "at", "from", "is", "are", "was", "were", "be", "been", "being",
@@ -702,7 +719,15 @@ def _deterministic_ai_result(
     deterministic_eval: Dict[str, Any],
     *,
     circuit_skipped: bool = False,
+    injection_detected: bool = False,
+    extraction_short: bool = False,
 ) -> Dict[str, Any]:
+    overall_score = deterministic_eval.get("overallScore", 0.0)
+    needs_review, review_flags = _compute_needs_review(
+        overall_score=overall_score,
+        injection_detected=injection_detected,
+        extraction_short=extraction_short,
+    )
     result = {
         "metrics": deterministic_eval["metrics"],
         "strengths": deterministic_eval.get("strengths", []),
@@ -711,10 +736,14 @@ def _deterministic_ai_result(
         "summaryInsights": deterministic_eval.get("summaryInsights", ""),
         "missingKeyPoints": deterministic_eval.get("missingKeyPoints", []),
         "conceptsCovered": deterministic_eval.get("conceptsCovered", []),
-        "overallScore": deterministic_eval.get("overallScore", 0.0),
+        "overallScore": overall_score,
         "scoreBreakdown": deterministic_eval.get("scoreBreakdown", []),
         "scoreExplanation": deterministic_eval.get("scoreExplanation", ""),
         "fallback": True,
+        "needsReview": needs_review,
+        "reviewFlags": review_flags,
+        "injectionDetected": injection_detected,
+        "extractionShort": extraction_short,
     }
     if circuit_skipped:
         result["groqCircuitSkipped"] = True
@@ -746,7 +775,24 @@ def evaluate_summary_with_ai(
     circuit_breaker: Optional[GroqCircuitBreaker] = None,
 ) -> Dict[str, Any]:
     if not student_summary.strip():
-        return _build_fallback_evaluation(student_summary, deterministic_metrics, core_concepts)
+        fb = _build_fallback_evaluation(student_summary, deterministic_metrics, core_concepts)
+        fb["needsReview"] = True
+        fb["reviewFlags"] = ["Submission text is empty"]
+        fb["injectionDetected"] = False
+        fb["extractionShort"] = True
+        return fb
+
+    # ── Guardrail: input validation and injection scan ─────────────────────
+    injection_detected = False
+    extraction_short = False
+    if _GUARDRAILS_AVAILABLE:
+        extraction_result = validate_extraction(student_summary.strip(), file_name="summary_submission")
+        if extraction_result.is_short:
+            extraction_short = True
+        injection_result = scan_for_injection(student_summary, context_label="summary_submission")
+        injection_detected = injection_result.injection_detected
+        if injection_result.warning_message:
+            _log_llm_event("INJECTION_DETECTED", injection_result.warning_message)
 
     deterministic_eval = _build_deterministic_evaluation(
         student_summary=student_summary,
@@ -757,11 +803,11 @@ def evaluate_summary_with_ai(
 
     if not _groq_enabled():
         _log_llm_event("DISABLED", "GROQ_API_KEY missing or placeholder; using deterministic evaluation")
-        return _deterministic_ai_result(deterministic_eval)
+        return _deterministic_ai_result(deterministic_eval, injection_detected=injection_detected, extraction_short=extraction_short)
 
     if circuit_breaker and circuit_breaker.should_skip_groq():
         _log_llm_event("CIRCUIT_OPEN", circuit_breaker.reason or "skipping Groq for remaining students")
-        return _deterministic_ai_result(deterministic_eval, circuit_skipped=True)
+        return _deterministic_ai_result(deterministic_eval, circuit_skipped=True, injection_detected=injection_detected, extraction_short=extraction_short)
 
     max_output = int(os.environ.get("GROQ_EVAL_MAX_OUTPUT_TOKENS", "500"))
     llm = ChatGroq(
@@ -821,12 +867,17 @@ def evaluate_summary_with_ai(
                 _log_llm_event("ERROR", f"compact retry failed: {retry_exc}")
                 if circuit_breaker and should_trip_circuit(retry_exc):
                     circuit_breaker.trip(str(retry_exc))
-                return _deterministic_ai_result(deterministic_eval)
+                return _deterministic_ai_result(deterministic_eval, injection_detected=injection_detected, extraction_short=extraction_short)
         else:
             if circuit_breaker and should_trip_circuit(exc):
                 circuit_breaker.trip(str(exc))
-            return _deterministic_ai_result(deterministic_eval)
+            return _deterministic_ai_result(deterministic_eval, injection_detected=injection_detected, extraction_short=extraction_short)
 
+    needs_review, review_flags = _compute_needs_review(
+        overall_score=overall_score,
+        injection_detected=injection_detected,
+        extraction_short=extraction_short,
+    )
     return {
         "metrics": merged_metrics,
         "strengths": strengths or deterministic_eval.get("strengths", []),
@@ -839,4 +890,32 @@ def evaluate_summary_with_ai(
         "scoreBreakdown": breakdown,
         "scoreExplanation": explanation,
         "fallback": False,
+        # ── Guardrail metadata (always present for downstream routing) ──────
+        "needsReview": needs_review,
+        "reviewFlags": review_flags,
+        "injectionDetected": injection_detected,
+        "extractionShort": extraction_short,
     }
+
+
+def _compute_needs_review(
+    *,
+    overall_score: float,
+    injection_detected: bool,
+    extraction_short: bool,
+) -> Tuple[bool, List[str]]:
+    """
+    Apply the review policy for summary evaluations without importing
+    the full review_policy module (avoids circular-import risk here).
+    """
+    if not _GUARDRAILS_AVAILABLE:
+        return False, []
+    try:
+        decision = decide_review(
+            output_valid=True,
+            injection_detected=injection_detected,
+            extraction_short=extraction_short,
+        )
+        return decision.status == EvalStatus.NEEDS_REVIEW, decision.review_notes
+    except Exception:
+        return False, []

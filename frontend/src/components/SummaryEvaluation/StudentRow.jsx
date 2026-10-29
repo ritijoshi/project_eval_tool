@@ -102,7 +102,19 @@ export const StudentRow = React.memo(({ ev, criterionNames = [] }) => {
             <td className="table-multiline">{missingConceptsText}</td>
             <td className="table-multiline">{feedbackText}</td>
             <td>
-                <span className="badge badge-success">{ev.evaluationStatus || 'COMPLETED'}</span>
+                <span className={
+                    ev.evaluationStatus === 'NEEDS_REVIEW' ? 'badge badge-warning' :
+                    ev.evaluationStatus === 'FAILED' ? 'badge badge-error' : 'badge badge-success'
+                }>
+                    {ev.evaluationStatus || 'COMPLETED'}
+                    {ev.needsReview && ev.evaluationStatus !== 'NEEDS_REVIEW' ? ' ?' : ''}
+                </span>
+                {ev.injectionDetected && <span className="badge badge-error" title="Injection content detected">?? Injection</span>}
+                {ev.reviewFlags && ev.reviewFlags.length > 0 && (
+                    <ul className="review-flags-list" style={{fontSize:'0.7rem',marginTop:2,paddingLeft:14,color:'#fb923c'}}>
+                        {ev.reviewFlags.slice(0,3).map((f,i)=><li key={i}>{f}</li>)}
+                    </ul>
+                )}
             </td>
         </tr>
     );

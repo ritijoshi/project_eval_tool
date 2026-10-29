@@ -287,7 +287,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         rollNumber: latestResult.rollNumber || latestResult.rollNo || 'UNKNOWN',
         submissionType: safeSubmissionType(latestResult.submissionType, session.assignmentType || 'text'),
         submissionContent: latestResult.submissionContent || latestResult.summaryText || '',
-        evaluationStatus: latestResult.success === false ? 'FAILED' : 'COMPLETED',
+        evaluationStatus: latestResult.success === false ? 'FAILED' : (latestResult.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED'),
         score: overallScore,
         overallScore,
         maxScore: latestResult.success === false ? null : Number(latestResult.maxScore ?? latestResult.max_score ?? latestResult.aiEvaluation?.maxScore ?? 100),
@@ -310,6 +310,11 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         fileName: latestResult.fileName || latestResult.file_name || '',
         errorMessage: latestResult.errorMessage || '',
         evaluatedAt: new Date(),
+        // ── Guardrail metadata ──────────────────────────────────────────────────
+        needsReview: !!latestResult.needsReview,
+        reviewFlags: normalizeList(latestResult.reviewFlags),
+        injectionDetected: !!latestResult.injectionDetected,
+        retryCount: typeof latestResult.retryCount === 'number' ? latestResult.retryCount : 0,
       });
       }
 
@@ -342,7 +347,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
                 rollNumber: result.rollNumber || result.rollNo || 'UNKNOWN',
                 submissionType: safeSubmissionType(result.submissionType, session.assignmentType || 'text'),
                 submissionContent: result.submissionContent || result.summaryText || '',
-                evaluationStatus: result.success === false ? 'FAILED' : 'COMPLETED',
+                evaluationStatus: result.success === false ? 'FAILED' : (result.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED'),
                 score: overallScore,
                 overallScore,
                 maxScore: result.success === false ? null : Number(result.maxScore ?? result.max_score ?? result.aiEvaluation?.maxScore ?? 100),
@@ -365,6 +370,11 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
                 fileName: result.fileName || result.file_name || '',
                 errorMessage: result.errorMessage || '',
                 evaluatedAt: new Date(),
+                // ── Guardrail metadata ──────────────────────────────────────────────────
+                needsReview: !!result.needsReview,
+                reviewFlags: normalizeList(result.reviewFlags),
+                injectionDetected: !!result.injectionDetected,
+                retryCount: typeof result.retryCount === 'number' ? result.retryCount : 0,
               },
             },
             upsert: true,
@@ -488,6 +498,14 @@ exports.triggerSingleEval = async (req, res, next) => {
     const submission = await AssignmentSubmission.findById(submissionId).populate('assignment');
     if (!submission) {
       return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    // Protect finalized or professor-reviewed grades from accidental overwrite
+    if ((submission.professorEvaluation?.approved || submission.professorEvaluation?.edited) && !req.body?.forceOverride) {
+      return res.status(409).json({
+        success: false,
+        message: 'Submission has already been reviewed or finalized by the professor. Provide forceOverride=true to re-evaluate.',
+      });
     }
 
     const assignment = submission.assignment || (assignmentId ? await Assignment.findById(assignmentId) : null);

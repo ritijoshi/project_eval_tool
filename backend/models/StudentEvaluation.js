@@ -73,18 +73,24 @@ const studentEvaluationSchema = new mongoose.Schema(
         },
         evaluationStatus: {
             type: String,
-            enum: ['PENDING', 'COMPLETED', 'FAILED'],
+            enum: ['PENDING', 'COMPLETED', 'NEEDS_REVIEW', 'FAILED'],
             default: 'PENDING',
         },
         errorMessage: {
             type: String,
             default: '',
         },
+        // ── Guardrail metadata ──────────────────────────────────────────────────
+        needsReview: { type: Boolean, default: false },
+        reviewFlags: { type: [String], default: [] },
+        injectionDetected: { type: Boolean, default: false },
     },
     { timestamps: true }
 );
 
 // Index for efficiently listing all evaluation results for a given session
 studentEvaluationSchema.index({ sessionId: 1, evaluationStatus: 1 });
+// Index to quickly query submissions that require human review
+studentEvaluationSchema.index({ sessionId: 1, needsReview: 1 });
 
 module.exports = mongoose.model('StudentEvaluation', studentEvaluationSchema);
