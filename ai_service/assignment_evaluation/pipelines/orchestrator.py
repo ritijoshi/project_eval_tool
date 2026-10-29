@@ -18,14 +18,12 @@ except ImportError:
     pass
 
 from assignment_evaluation.utils.file_extractor import extract_text_from_submission
-from summary_evaluation.services.groq_circuit import (
-    GroqCircuitBreaker,
-    is_request_too_large_error,
-)
+from summary_evaluation.services.groq_circuit import is_request_too_large_error
 
-GROQ_EVAL_CONCURRENCY = 3
 DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b'
 RETIRED_GROQ_MODELS = {'llama-3.1-8b-instant'}
+DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434'
+DEFAULT_OLLAMA_MODEL = 'qwen3:4b'
 PROMPT_CHAR_BUDGET = 15000
 COMPACT_PROMPT_CHAR_BUDGET = 10000
 MINIMAL_PROMPT_CHAR_BUDGET = 7000
@@ -316,17 +314,130 @@ def _student_label(relative_path: str) -> str:
     return os.path.splitext(os.path.basename(relative_path))[0] or relative_path
 
 
-def _llm_enabled():
+def _groq_enabled():
     key = os.environ.get('GROQ_API_KEY', '').strip()
     return bool(key) and key != 'gsk-placeholder'
 
 
-def _is_transient_llm_error(exc):
+def _ollama_enabled():
+    return os.environ.get('OLLAMA_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no'}
+
+
+def _exception_status(exc):
+    for candidate in (
+        getattr(exc, 'status_code', None),
+        getattr(getattr(exc, 'response', None), 'status_code', None),
+        getattr(exc, 'http_status', None),
+    ):
+        if candidate is not None:
+            try:
+                return int(candidate)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _is_groq_quota_exhausted(exc):
+    if _exception_status(exc) != 429:
+        return False
     message = str(exc).lower()
     return any(token in message for token in (
-        '429', 'rate limit', 'timeout', 'timed out', 'temporarily unavailable',
-        'service unavailable', 'connection reset', 'connection error', '502', '503', '504',
+        'daily', 'quota', 'token limit', 'tokens limit', 'limit exceeded',
+        'exceeded your limit',
     ))
+
+
+def _is_authentication_error(exc):
+    return _exception_status(exc) in {401, 403}
+
+
+def _is_transient_llm_error(exc):
+    status = _exception_status(exc)
+    message = str(exc).lower()
+    return status in {408, 429, 500, 502, 503, 504} or any(token in message for token in (
+        'rate limit', 'timeout', 'timed out', 'temporarily unavailable',
+        'service unavailable', 'connection reset', 'connection error',
+    ))
+
+
+def _ollama_url(path: str = '/api/chat'):
+    return f"{os.environ.get('OLLAMA_BASE_URL', DEFAULT_OLLAMA_BASE_URL).rstrip('/')}{path}"
+
+
+async def _invoke_ollama(messages):
+    request = {
+        'model': os.environ.get('OLLAMA_MODEL', DEFAULT_OLLAMA_MODEL),
+        'messages': [
+            {
+                'role': {'human': 'user', 'ai': 'assistant'}.get(
+                    getattr(message, 'type', 'user'), getattr(message, 'type', 'user')
+                ),
+                'content': str(getattr(message, 'content', message)),
+            }
+            for message in messages
+        ],
+        'stream': False,
+        # Qwen3 can emit a reasoning trace before the requested JSON. Disable
+        # it so the rubric parser receives only the structured answer.
+        'think': False,
+        'format': 'json',
+        'options': {'temperature': 0, 'num_predict': max(MAX_COMPLETION_TOKENS, 1600)},
+    }
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        response = await client.post(_ollama_url(), json=request)
+        response.raise_for_status()
+        body = response.json()
+    content = body.get('message', {}).get('content') if isinstance(body, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError('Ollama response did not contain message.content')
+    return content
+
+
+async def _invoke_groq(messages):
+    llm = ChatGroq(
+        model_name=_groq_model(),
+        temperature=0.0,
+        max_tokens=max(MAX_COMPLETION_TOKENS, 1600),
+        model_kwargs={'response_format': {'type': 'json_object'}},
+    )
+    response = await asyncio.to_thread(llm.invoke, messages)
+    return getattr(response, 'content', response)
+
+
+async def _invoke_and_validate(provider, prompt, values, criteria, rubric_package, student_name, file_name, text):
+    last_error = None
+    for attempt in range(2):
+        try:
+            attempt_values = values if attempt == 0 else _prompt_values(
+                rubric_package,
+                criteria,
+                student_name,
+                file_name,
+                text,
+                budget=MINIMAL_PROMPT_CHAR_BUDGET,
+            )
+            if attempt:
+                attempt_values['studentAnswer'] += (
+                    '\n\nCORRECTION: Return one complete JSON object matching the requested schema. '
+                    'Do not include markdown or commentary.'
+                )
+            messages = prompt.format_messages(**attempt_values)
+            raw = (
+                await _invoke_groq(messages)
+                if provider == 'groq'
+                else await _invoke_ollama(messages)
+            )
+            return _validate_llm_payload(_parse_json_object(raw), criteria)
+        except Exception as exc:
+            last_error = exc
+            if provider == 'groq' and (_is_groq_quota_exhausted(exc) or _is_authentication_error(exc)):
+                raise
+            if attempt == 1:
+                raise
+            if not isinstance(exc, ValueError) and not _is_transient_llm_error(exc):
+                raise
+            await asyncio.sleep(1)
+    raise ValueError(f'{provider} evaluation failed validation: {last_error}')
 
 
 async def evaluate_single_submission_with_llm(
@@ -340,25 +451,14 @@ async def evaluate_single_submission_with_llm(
     criteria = rubric_package.get('criteria') or parse_rubric(rubric_package.get('rubricText', ''))
     if not text:
         raise ValueError(f'No extractable student answer for {file_name}')
-    if not _llm_enabled():
-        raise RuntimeError('LLM evaluation is unavailable because GROQ_API_KEY is not configured')
+    providers = []
+    if _groq_enabled():
+        providers.append('groq')
+    if _ollama_enabled():
+        providers.append('ollama')
+    if not providers:
+        raise RuntimeError('LLM evaluation is unavailable; configure Groq or enable Ollama')
 
-    print(json.dumps({
-        'stage': 'before_llm',
-        'studentName': student_name,
-        'fileName': file_name,
-        'assignmentQuestion': rubric_package.get('assignmentQuestion', ''),
-        'rubric': rubric_package.get('rubricText', ''),
-        'modelAnswer': rubric_package.get('modelAnswer', ''),
-        'studentAnswer': text,
-    }, ensure_ascii=False))
-
-    llm = ChatGroq(
-        model_name=_groq_model(),
-        temperature=0.0,
-        max_tokens=max(MAX_COMPLETION_TOKENS, 1600),
-        model_kwargs={'response_format': {'type': 'json_object'}},
-    )
     prompt = ChatPromptTemplate.from_messages([
         ('system', '''You are an academic assignment evaluator. Evaluate exactly one student's submission using the assignment question, rubric, and reference answer.
 Return ONLY valid JSON. Do not copy rubric text into concepts. Do not invent criteria. Include every rubric criterion exactly once, even when its score is zero.
@@ -387,35 +487,24 @@ STUDENT SUBMISSION:
 Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence.'''),
     ])
     prompt_values = _prompt_values(rubric_package, criteria, student_name, file_name, text)
-    response = None
     payload = None
     last_error = None
-    for attempt in range(3):
+    for provider in providers:
         try:
-            values = prompt_values if attempt == 0 else _prompt_values(
-                rubric_package, criteria, student_name, file_name, text,
-                budget=COMPACT_PROMPT_CHAR_BUDGET if attempt == 1 else MINIMAL_PROMPT_CHAR_BUDGET,
-            )
-            if attempt:
-                values['studentAnswer'] += (
-                    '\n\nCORRECTION: Your previous response was rejected because it was '
-                    f'{last_error}. Return one complete JSON object matching the requested schema.'
-                )
-            response = await asyncio.to_thread(llm.invoke, prompt.format_messages(**values))
-            payload = _validate_llm_payload(
-                _parse_json_object(getattr(response, 'content', response)), criteria
+            payload = await _invoke_and_validate(
+                provider, prompt, prompt_values, criteria, rubric_package,
+                student_name, file_name, text,
             )
             break
         except Exception as exc:
             last_error = exc
-            retryable = (
-                is_request_too_large_error(exc)
-                or isinstance(exc, ValueError)
-                or _is_transient_llm_error(exc)
-            )
-            if attempt == 2 or not retryable:
-                raise
-            await asyncio.sleep(2 ** attempt)
+            if provider == 'groq' and (
+                _is_groq_quota_exhausted(exc) or _is_authentication_error(exc)
+            ):
+                continue
+            if provider == 'groq' and is_request_too_large_error(exc) and 'ollama' in providers:
+                continue
+            raise
     if payload is None:
         raise ValueError(f'LLM evaluation failed validation: {last_error}')
     returned = {str(item.get('name', '')).strip().lower(): item for item in payload.get('criteria', []) if isinstance(item, dict)}
@@ -460,7 +549,6 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requ
 
 
 async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_path: str, assignment_type: str, webhook_url: str, assignment_question: str = '', model_answer: str = ''):
-    circuit_breaker = GroqCircuitBreaker(session_id=session_id)
     temp_dir = os.path.join(os.path.dirname(zip_path), f"assignment_session_{session_id}")
     os.makedirs(temp_dir, exist_ok=True)
 

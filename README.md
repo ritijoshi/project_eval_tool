@@ -13,28 +13,52 @@ npm start
 ```
 This single command uses `concurrently` to automatically boot up the Frontend, Node.js Backend, and Python AI Engine, displaying all their logs color-coded in one place!
 
-## AI Service Configuration (Groq + Free Embeddings)
+## AI Service Configuration (Groq + Ollama + Free Embeddings)
 
 The AI microservice now uses:
 - Groq-hosted LLMs (Llama 3 / Mixtral)
+- Ollama (`qwen3:4b`) as a local fallback for zero-cost inference
 - Free local embeddings via HuggingFace sentence-transformers for RAG
 
-### Required environment variable
-Set this before starting the Python service:
+### Provider environment variables
+
+Groq is optional. Set it if you want Groq tried first:
 
 ```bash
 GROQ_API_KEY=your_groq_api_key
 ```
 
+For zero-cost local-only inference, omit `GROQ_API_KEY` and keep Ollama enabled.
+The existing `OPENAI_API_KEY` is not used as an assignment-evaluation fallback.
+
 ### Optional environment variables
 
 ```bash
-# Default model is llama3-8b-8192
-GROQ_MODEL=llama3-8b-8192
+# Groq is tried first when GROQ_API_KEY is configured.
+GROQ_MODEL=openai/gpt-oss-20b
+
+# Ollama is used when Groq daily quota/authentication fails or is not configured.
+OLLAMA_ENABLED=true
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:4b
 
 # Default embedding model is sentence-transformers/all-MiniLM-L6-v2
 HF_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ```
+
+Ollama is never replaced by OpenAI automatically. Start it before the application:
+
+```powershell
+ollama serve
+ollama run qwen3:4b
+```
+
+The evaluator sends one local request at a time for batch submissions. It validates every
+criterion score against the rubric and makes one bounded JSON repair attempt; invalid output
+is recorded as a failed submission rather than fabricated. To verify fallback end to end,
+keep Ollama running, temporarily use an exhausted/invalid Groq key (or unset `GROQ_API_KEY`),
+start the application with `npm start`, submit a rubric and ZIP, and confirm the session
+progresses through `EVALUATING` and stores completed results or explicit failed results.
 
 ### Assistant capabilities implemented
 - Course-material grounded answers using RAG (FAISS + HuggingFace embeddings)
