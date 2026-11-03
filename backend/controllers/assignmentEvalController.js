@@ -31,6 +31,15 @@ const safeNumberOrNull = (value) => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
+const hasValidFinalScore = (result) => (
+  result?.success !== false &&
+  typeof result?.overallScore === 'number' &&
+  Number.isFinite(result.overallScore) &&
+  typeof result?.maxScore === 'number' &&
+  Number.isFinite(result.maxScore) &&
+  result.maxScore > 0
+);
+
 const safeSubmissionType = (value, fallback = 'text') => (
   ['text', 'code', 'mixed'].includes(value) ? value : fallback
 );
@@ -65,7 +74,7 @@ const normalizeScoreBreakdown = (input) => {
 
   return Object.entries(input).reduce((acc, [key, value]) => {
     if (!value || typeof value !== 'object') {
-      acc[String(key)] = { score: Number(value ?? 0), maxScore: 0, reason: '', evidence: '', evidenceVerified: null };
+acc[String(key)] = { score: Number(value ?? 0), maxScore: 0, reason: '', evidence: '', evidenceVerified: null };
       return acc;
     }
 
@@ -282,9 +291,14 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         savedResult = existingLatestResult;
       } else {
       const normalizedBreakdown = normalizeScoreBreakdown(latestResult.scoreBreakdown || latestResult.aiEvaluation?.scoreBreakdown || {});
-      const overallScore = latestResult.success === false
-        ? null
-        : safeNumberOrNull(latestResult.overallScore ?? latestResult.score ?? latestResult.aiEvaluation?.overallScore ?? 0);
+      const rawOverallScore = latestResult.overallScore ?? latestResult.score ?? latestResult.aiEvaluation?.overallScore;
+      const rawMaxScore = latestResult.maxScore ?? latestResult.max_score ?? latestResult.aiEvaluation?.maxScore;
+      const overallScore = latestResult.success === false ? null : safeNumberOrNull(rawOverallScore);
+      const validFinalScore = hasValidFinalScore({
+        ...latestResult,
+        overallScore,
+        maxScore: safeNumberOrNull(rawMaxScore),
+      });
       const aiConfidence = safeNumberOrNull(latestResult.confidence ?? latestResult.aiEvaluation?.confidence ?? latestResult.overallConfidence);
 
       savedResult = await AssignmentStudentResult.create({
@@ -293,7 +307,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         rollNumber: latestResult.rollNumber || latestResult.rollNo || 'UNKNOWN',
         submissionType: safeSubmissionType(latestResult.submissionType, session.assignmentType || 'text'),
         submissionContent: latestResult.submissionContent || latestResult.summaryText || '',
-        evaluationStatus: latestResult.success === false ? 'FAILED' : (latestResult.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED'),
+        evaluationStatus: latestResult.success === false || !validFinalScore ? 'FAILED' : (latestResult.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED'),
         score: overallScore,
         overallScore,
         maxScore: latestResult.success === false ? null : Number(latestResult.maxScore ?? latestResult.max_score ?? latestResult.aiEvaluation?.maxScore ?? 100),
@@ -321,7 +335,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         reviewFlags: normalizeList(latestResult.reviewFlags),
         injectionDetected: !!latestResult.injectionDetected,
         retryCount: typeof latestResult.retryCount === 'number' ? latestResult.retryCount : 0,
-        agenticExecution: latestResult.agenticExecution || null,
+agenticExecution: latestResult.agenticExecution || null,
       });
       }
 
@@ -338,9 +352,14 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
     if (Array.isArray(results) && results.length > 0) {
       const ops = results.map((result) => {
         const normalizedBreakdown = normalizeScoreBreakdown(result.scoreBreakdown || result.aiEvaluation?.scoreBreakdown || {});
-        const overallScore = result.success === false
-          ? null
-          : safeNumberOrNull(result.overallScore ?? result.score ?? result.aiEvaluation?.overallScore ?? 0);
+        const rawOverallScore = result.overallScore ?? result.score ?? result.aiEvaluation?.overallScore;
+        const rawMaxScore = result.maxScore ?? result.max_score ?? result.aiEvaluation?.maxScore;
+        const overallScore = result.success === false ? null : safeNumberOrNull(rawOverallScore);
+        const validFinalScore = hasValidFinalScore({
+          ...result,
+          overallScore,
+          maxScore: safeNumberOrNull(rawMaxScore),
+        });
         const aiConfidence = safeNumberOrNull(result.confidence ?? result.aiEvaluation?.confidence ?? result.overallConfidence);
         return {
           updateOne: {
@@ -354,7 +373,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
                 rollNumber: result.rollNumber || result.rollNo || 'UNKNOWN',
                 submissionType: safeSubmissionType(result.submissionType, session.assignmentType || 'text'),
                 submissionContent: result.submissionContent || result.summaryText || '',
-                evaluationStatus: result.success === false ? 'FAILED' : (result.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED'),
+                evaluationStatus: result.success === false || !validFinalScore ? 'FAILED' : (result.needsReview ? 'NEEDS_REVIEW' : 'COMPLETED'),
                 score: overallScore,
                 overallScore,
                 maxScore: result.success === false ? null : Number(result.maxScore ?? result.max_score ?? result.aiEvaluation?.maxScore ?? 100),
@@ -382,7 +401,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
                 reviewFlags: normalizeList(result.reviewFlags),
                 injectionDetected: !!result.injectionDetected,
                 retryCount: typeof result.retryCount === 'number' ? result.retryCount : 0,
-                agenticExecution: result.agenticExecution || null,
+agenticExecution: result.agenticExecution || null,
               },
             },
             upsert: true,

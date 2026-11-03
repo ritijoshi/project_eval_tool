@@ -69,6 +69,99 @@ def test_assignment_payload_validation_rejects_invalid_score_and_missing_fields(
         orchestrator._validate_llm_payload(invalid, criteria)
 
 
+@pytest.mark.parametrize('raw, expected', [
+    (0, 0.0),
+    (0.5, 0.5),
+    (0.85, 0.85),
+    (1, 1.0),
+    ('0.85', 0.85),
+    (85, 0.85),
+    ('85%', 0.85),
+])
+def test_assignment_payload_validation_normalizes_confidence_in_place(raw, expected):
+    orchestrator = importlib.import_module('assignment_evaluation.pipelines.orchestrator')
+    criteria = [{'name': 'Correctness', 'maxScore': 5, 'description': 'Accuracy'}]
+    payload = {
+        'criteria': [{'name': 'Correctness', 'score': 4, 'feedback': 'Mostly correct.'}],
+        'confidence': raw,
+        'feedback': 'Good answer.',
+        'strengths': [],
+        'weakAreas': [],
+        'mistakes': [],
+        'missingConcepts': [],
+        'missingKeyPoints': [],
+        'requiredConcepts': [],
+        'conceptsCovered': [],
+    }
+
+    result = orchestrator._validate_llm_payload(payload, criteria)
+
+    assert result is payload
+    assert result['confidence'] == expected
+    assert isinstance(result['confidence'], float)
+
+
+@pytest.mark.parametrize('raw', [None, -1, 1.5, float('nan'), float('inf')])
+def test_assignment_payload_validation_rejects_unsafe_confidence(raw):
+    orchestrator = importlib.import_module('assignment_evaluation.pipelines.orchestrator')
+    criteria = [{'name': 'Correctness', 'maxScore': 5, 'description': 'Accuracy'}]
+    payload = {
+        'criteria': [{'name': 'Correctness', 'score': 4, 'feedback': 'Mostly correct.'}],
+        'confidence': raw,
+        'feedback': 'Good answer.',
+        'strengths': [],
+        'weakAreas': [],
+        'mistakes': [],
+        'missingConcepts': [],
+        'missingKeyPoints': [],
+        'requiredConcepts': [],
+        'conceptsCovered': [],
+    }
+
+    with pytest.raises(ValueError, match='confidence must be a number between 0 and 1'):
+        orchestrator._validate_llm_payload(payload, criteria)
+
+
+def test_invalid_confidence_recovers_without_another_llm_call(monkeypatch):
+    import asyncio
+
+    orchestrator = importlib.import_module('assignment_evaluation.pipelines.orchestrator')
+    calls = 0
+
+    async def fake_invoke(*_args):
+        nonlocal calls
+        calls += 1
+        return json.dumps({
+            'criteria': [{'name': 'Correctness', 'score': 4, 'feedback': 'Mostly correct.'}],
+            'confidence': None,
+            'feedback': 'Good answer.',
+            'strengths': [],
+            'weakAreas': [],
+            'mistakes': [],
+            'missingConcepts': [],
+            'missingKeyPoints': [],
+            'requiredConcepts': [],
+            'conceptsCovered': [],
+        })
+
+    monkeypatch.setattr(orchestrator, '_invoke_groq', fake_invoke)
+    prompt = type('Prompt', (), {'format_messages': lambda self, **_kwargs: []})()
+    result = asyncio.run(orchestrator._invoke_and_validate(
+        'groq',
+        prompt,
+        {},
+        [{'name': 'Correctness', 'maxScore': 5}],
+        {},
+        'Student',
+        'submission.txt',
+        'answer',
+    ))
+
+    assert calls == 1
+    assert result['confidence'] == 0.0
+    assert isinstance(result['confidence'], float)
+
+
 def test_assignment_rubric_parser_preserves_part_marks():
     orchestrator = importlib.import_module('assignment_evaluation.pipelines.orchestrator')
     criteria = orchestrator.parse_rubric(

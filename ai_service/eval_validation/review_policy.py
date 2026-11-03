@@ -11,6 +11,7 @@ This module contains no LLM calls and no database operations.
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -50,6 +51,49 @@ _LEGAL_TRANSITIONS: dict[EvalStatus, set[EvalStatus]] = {
     EvalStatus.COMPLETED:          set(),   # terminal
     EvalStatus.FAILED:             set(),   # terminal
 }
+
+
+class InvalidConfidenceError(ValueError):
+    """Raised when a confidence value cannot be safely normalized."""
+
+
+def normalize_confidence(value) -> float:
+    """Normalize confidence to a finite float in the inclusive 0-1 range."""
+    if isinstance(value, bool) or value is None:
+        raise InvalidConfidenceError("confidence must be a number between 0 and 1")
+
+    is_percentage = False
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise InvalidConfidenceError("confidence must be a number between 0 and 1")
+        is_percentage = text.endswith("%")
+        if is_percentage:
+            text = text[:-1].strip()
+            if not text:
+                raise InvalidConfidenceError("confidence must be a number between 0 and 1")
+        try:
+            confidence = float(text)
+        except ValueError as exc:
+            raise InvalidConfidenceError("confidence must be a number between 0 and 1") from exc
+    else:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError) as exc:
+            raise InvalidConfidenceError("confidence must be a number between 0 and 1") from exc
+
+    if not math.isfinite(confidence):
+        raise InvalidConfidenceError("confidence must be a number between 0 and 1")
+    if is_percentage:
+        if 0 <= confidence <= 100:
+            return confidence / 100.0
+        raise InvalidConfidenceError("confidence must be a number between 0 and 1")
+    if 0 <= confidence <= 1:
+        return confidence
+    # Whole-number values above 1 are unambiguous percentage representations.
+    if confidence.is_integer() and 1 < confidence <= 100:
+        return confidence / 100.0
+    raise InvalidConfidenceError("confidence must be a number between 0 and 1")
 
 
 def is_legal_transition(from_status: EvalStatus, to_status: EvalStatus) -> bool:
@@ -147,6 +191,13 @@ def decide_review(
             retry_count=retry_count,
             can_retry=False,
         )
+
+    if confidence is not None:
+        try:
+            confidence = normalize_confidence(confidence)
+        except InvalidConfidenceError:
+            confidence = 0.0
+            notes.append("Invalid model confidence was normalized conservatively; professor review required.")
 
     # 3: injection
     if injection_detected:

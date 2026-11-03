@@ -142,6 +142,8 @@ class AgenticOrchestrator:
             )
             ctx.completed_steps.append("verify_evidence_spans")
             self.planner.evaluate_branch_condition(plan.steps[3], evidence_res, ctx)
+            if not evidence_res.get("verificationAvailable", False):
+                ctx.add_review_flag("MISSING_EVIDENCE_CITATIONS")
 
             # ─── Multi-Agent Specialist Collaboration (Mode 3 / selective Mode 2) ─
             specialist_results: Dict[str, Any] = {}
@@ -213,6 +215,15 @@ class AgenticOrchestrator:
 
             # 4. Final State Decision
             needs_review = quality_res.get("needsReview", False) or bool(ctx.review_flags)
+            score_valid = (
+                isinstance(score_res.get("totalScore"), (int, float))
+                and isinstance(score_res.get("maxScore"), (int, float))
+                and score_res["maxScore"] > 0
+                and bool(score_res.get("breakdown"))
+            )
+            if not score_valid:
+                ctx.add_review_flag("MISSING_FINAL_SCORE")
+                needs_review = True
             final_status = EvalStatus.NEEDS_REVIEW if needs_review else EvalStatus.COMPLETED
             ctx.transition_to(final_status, "Final checks complete", ActorType.DETERMINISTIC)
 
@@ -250,11 +261,24 @@ class AgenticOrchestrator:
                     "mode": cfg.mode,
                     "runId": ctx.run_id,
                     "planId": plan.plan_id,
-                    "planSteps": [s.to_dict() for s in plan.steps],
+"planSteps": [
+                        {
+                            **step.to_dict(),
+                            "status": (
+                                "COMPLETED"
+                                if step.tool in ctx.completed_steps
+                                else "FAILED"
+                            ),
+                        }
+                        for step in plan.steps
+                    ],
+                    "toolInvocations": [call.to_dict() for call in ctx.tool_invocations],
                     "toolCallCount": len(ctx.tool_invocations),
-                    "toolInvocations": [t.to_dict() for t in ctx.tool_invocations],
                     "elapsedSeconds": round(ctx.elapsed_seconds(), 2),
-                    "evidenceVerificationRate": evidence_res.get("verificationRate", 1.0),
+                    "evidenceVerificationRate": evidence_res.get("verificationRate"),
+                    "evidenceVerificationAvailable": evidence_res.get("verificationAvailable", False),
+                    "verifiedEvidenceCount": evidence_res.get("verifiedCount", 0),
+                    "unverifiedEvidenceCount": evidence_res.get("unverifiedCount", 0),
                     "specialistAgents": specialist_results,
                 },
             }

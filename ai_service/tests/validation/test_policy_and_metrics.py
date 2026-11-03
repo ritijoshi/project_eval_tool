@@ -85,6 +85,14 @@ class TestReviewDecision:
         decision = decide_review(output_valid=True, confidence=0.9)
         assert decision.status == EvalStatus.COMPLETED
 
+    def test_percentage_confidence_is_normalized_before_review(self):
+        decision = decide_review(output_valid=True, confidence="85%")
+        assert decision.status == EvalStatus.COMPLETED
+
+    def test_invalid_confidence_requires_review(self):
+        decision = decide_review(output_valid=True, confidence=1.5)
+        assert decision.status == EvalStatus.NEEDS_REVIEW
+
     def test_short_extraction_flags_for_review(self):
         decision = decide_review(output_valid=True, extraction_short=True)
         assert decision.status == EvalStatus.NEEDS_REVIEW

@@ -188,13 +188,14 @@ def tool_verify_evidence_spans(student_text: str, cited_spans: List[str]) -> Dic
         unverified.append(span_str)
 
     total = len(verified) + len(unverified)
-    rate = (len(verified) / total) if total > 0 else 1.0
+    rate = (len(verified) / total) if total > 0 else None
 
     return {
-        "allVerified": len(unverified) == 0,
+        "allVerified": bool(total) and len(unverified) == 0,
         "verifiedCount": len(verified),
         "unverifiedCount": len(unverified),
-        "verificationRate": round(rate, 3),
+        "verificationRate": round(rate, 3) if rate is not None else None,
+        "verificationAvailable": total > 0,
         "verified": verified,
         "unverified": unverified,
     }
@@ -217,6 +218,8 @@ def tool_calculate_final_score(criteria_scores: List[Dict[str, Any]], formula: s
         name = str(item.get("name") or "Unnamed").strip()
         max_score = float(item.get("maxScore", item.get("max_score", 0.0)))
         raw_score = float(item.get("score", 0.0))
+        if max_score <= 0:
+            raise ValueError(f"Criterion {name} has no positive maximum score")
 
         # Clamp strictly between 0 and max_score
         clamped_score = max(0.0, min(max_score, raw_score))

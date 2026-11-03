@@ -40,8 +40,8 @@ VALID_STUDENT_TEXT = (
 VALID_LLM_OUTPUT = {
     "overallScore": 14.0,
     "criteria": [
-        {"name": "Clarity", "score": 4.5, "maxScore": 5.0, "feedback": "Clear phrasing."},
-        {"name": "Technical Accuracy", "score": 9.5, "maxScore": 10.0, "feedback": "Accurate concepts."},
+        {"name": "Clarity", "score": 4.5, "maxScore": 5.0, "feedback": "Clear phrasing.", "evidence": "caches sub-problem solutions"},
+        {"name": "Technical Accuracy", "score": 9.5, "maxScore": 10.0, "feedback": "Accurate concepts.", "evidence": "Memoization stores results in a table"},
     ],
     "requiredConcepts": ["dynamic programming"],
     "strengths": ["Clear"],
@@ -176,3 +176,27 @@ class TestAgenticOrchestratorExecution:
         assert ctx.current_state == EvalStatus.COMPLETED
         assert len(ctx.completed_steps) >= 5
 
+    @patch("assignment_evaluation.pipelines.orchestrator.ChatGroq")
+    def test_orchestrator_valid_score_without_evidence_requires_review(self, MockGroq):
+        MockGroq.return_value.invoke.return_value = _make_mock_llm_response({
+            **VALID_LLM_OUTPUT,
+            "criteria": [
+                {key: value for key, value in item.items() if key != "evidence"}
+                for item in VALID_LLM_OUTPUT["criteria"]
+            ],
+        })
+        orchestrator = AgenticOrchestrator()
+        rubric_pkg = {"criteria": VALID_CRITERIA, "rubricText": "Clarity 5, Accuracy 10"}
+
+        with ConfigOverride(eval_enabled=True, mode=2):
+            ctx = RunContext(workflow_type=WorkflowType.INDIVIDUAL_ASSIGNMENT)
+            result = asyncio.run(orchestrator.evaluate_single_assignment(
+                student_text=VALID_STUDENT_TEXT,
+                rubric_package=rubric_pkg,
+                context=ctx,
+            ))
+
+        assert result["overallScore"] == pytest.approx(14.0)
+        assert result["needsReview"] is True
+        assert "MISSING_EVIDENCE_CITATIONS" in result["reviewFlags"]
+        assert ctx.current_state == EvalStatus.NEEDS_REVIEW

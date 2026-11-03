@@ -125,8 +125,8 @@ class TestMultiAgentOrchestrationMode:
         mock_resp = {
             "overallScore": 14.0,
             "criteria": [
-                {"name": "Clarity", "score": 4.5, "maxScore": 5.0, "feedback": "Clear explanation of dynamic programming."},
-                {"name": "Accuracy", "score": 9.5, "maxScore": 10.0, "feedback": "Accurate description of memoization."},
+                {"name": "Clarity", "score": 4.5, "maxScore": 5.0, "feedback": "Clear explanation of dynamic programming.", "evidence": "caches sub-problem solutions"},
+                {"name": "Accuracy", "score": 9.5, "maxScore": 10.0, "feedback": "Accurate description of memoization.", "evidence": "Memoization stores results in a table"},
             ],
             "requiredConcepts": ["dynamic programming"],
             "strengths": ["Strong understanding"],
@@ -173,8 +173,8 @@ class TestMultiAgentOrchestrationMode:
             "overallScore": 14.0,
             "criteria": [
                 # Contradictory feedback: perfect score but says completely failed
-                {"name": "Clarity", "score": 5.0, "maxScore": 5.0, "feedback": "Completely failed, missing all details."},
-                {"name": "Accuracy", "score": 9.0, "maxScore": 10.0, "feedback": "Good memoization."},
+                {"name": "Clarity", "score": 5.0, "maxScore": 5.0, "feedback": "Completely failed, missing all details.", "evidence": "caches sub-problem solutions"},
+                {"name": "Accuracy", "score": 9.0, "maxScore": 10.0, "feedback": "Good memoization.", "evidence": "Memoization stores results in a table"},
             ],
             "requiredConcepts": [],
             "strengths": [],

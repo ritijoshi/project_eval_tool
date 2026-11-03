@@ -30,7 +30,12 @@ try:
         build_injection_safe_system_instruction,
     )
     from eval_validation.input_validator import validate_extraction
-    from eval_validation.review_policy import decide_review, EvalStatus
+    from eval_validation.review_policy import (
+        decide_review,
+        EvalStatus,
+        InvalidConfidenceError,
+        normalize_confidence,
+    )
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -121,7 +126,7 @@ def _normalize_score_breakdown(raw: dict):
             normalized[str(key)] = {
                 'score': value.get('score', 0),
                 'maxScore': value.get('maxScore', value.get('max_score', 0)),
-                'reason': value.get('reason', value.get('feedback', '')),
+'reason': value.get('reason', value.get('feedback', '')),
                 'evidence': value.get('evidence', ''),
                 'evidenceVerified': value.get('evidenceVerified', None),
             }
@@ -143,6 +148,11 @@ def _response_content(raw):
                 parts.append(block['text'])
         return ''.join(parts)
     return str(raw or '')
+
+
+def _log_json(payload):
+    """Write diagnostic JSON without depending on the host console encoding."""
+    print(json.dumps(payload, ensure_ascii=True))
 
 
 def _parse_json_object(raw):
@@ -203,13 +213,10 @@ def _validate_llm_payload(payload, criteria):
             raise ValueError(f'Score for criterion {criterion["name"]} must be between 0 and {maximum}')
         if not isinstance(item.get('feedback'), str) or not item['feedback'].strip():
             raise ValueError(f'Criterion {criterion["name"]} requires feedback')
-    confidence = payload.get('confidence')
     try:
-        confidence = float(confidence)
-    except (TypeError, ValueError) as exc:
-        raise ValueError('confidence must be a number between 0 and 1') from exc
-    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
-        raise ValueError('confidence must be a number between 0 and 1')
+        payload['confidence'] = normalize_confidence(payload.get('confidence'))
+    except InvalidConfidenceError:
+        raise
     for field in ('strengths', 'weakAreas', 'mistakes', 'missingConcepts', 'missingKeyPoints',
                   'requiredConcepts', 'conceptsCovered'):
         if not isinstance(payload.get(field), list):
@@ -445,7 +452,15 @@ async def _invoke_and_validate(provider, prompt, values, criteria, rubric_packag
                 if provider == 'groq'
                 else await _invoke_ollama(messages)
             )
-            return _validate_llm_payload(_parse_json_object(raw), criteria)
+            parsed_payload = _parse_json_object(raw)
+            try:
+                return _validate_llm_payload(parsed_payload, criteria)
+            except InvalidConfidenceError:
+                # Invalid confidence is rejected without another API call. A
+                # conservative value forces human review while preserving the
+                # valid numeric payload contract for downstream consumers.
+                parsed_payload['confidence'] = 0.0
+                return _validate_llm_payload(parsed_payload, criteria)
         except Exception as exc:
             last_error = exc
             if provider == 'groq' and (_is_groq_quota_exhausted(exc) or _is_authentication_error(exc)):
@@ -494,7 +509,7 @@ async def evaluate_single_submission_with_llm(
         if injection_result.warning_message:
             print(f'[assignment_eval][injection_guard] {injection_result.warning_message}')
 
-    print(json.dumps({
+    _log_json({
         'stage': 'before_llm',
         'studentName': student_name,
         'fileName': file_name,
@@ -504,7 +519,7 @@ async def evaluate_single_submission_with_llm(
         'studentAnswer': text,
         'injectionDetected': injection_detected,
         'extractionShort': extraction_short,
-    }, ensure_ascii=False))
+    })
 
     # ── Build safe student content (delimited to prevent instruction confusion) ─
     if _GUARDRAILS_AVAILABLE:
@@ -540,7 +555,7 @@ SUBMISSION FILE:
 STUDENT SUBMISSION:
 {studentAnswer}
 
-Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evidence: quote exact text snippet from STUDENT SUBMISSION supporting this score), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence.'''),
+Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evidence: quote exact text snippet from STUDENT SUBMISSION supporting this score), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence. Confidence must be a JSON number from 0 to 1, not a percentage.'''),
     ])
     prompt_values = _prompt_values(
         rubric_package, criteria, student_name, file_name, safe_student_content
@@ -575,7 +590,13 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evide
         max_score = float(criterion['maxScore'])
         item = returned.get(name.lower(), {})
         score = float(item['score'])
-        breakdown[name] = {'score': round(score, 2), 'maxScore': round(max_score, 2), 'reason': str(item.get('feedback', item.get('reason', ''))).strip(), 'evidence': str(item.get('evidence', '')).strip(), 'evidenceVerified': None}
+        breakdown[name] = {
+            'score': round(score, 2),
+            'maxScore': round(max_score, 2),
+            'reason': str(item.get('feedback', item.get('reason', ''))).strip(),
+            'evidence': str(item.get('evidence', '')).strip(),
+            'evidenceVerified': None,
+        }
         score_total += score
         max_total += max_score
 
@@ -655,7 +676,7 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
         extracted_files = _safe_extract_zip(zip_path, temp_dir)
         student_groups = _submission_groups(temp_dir, extracted_files)
         total_students = len(student_groups)
-        print(json.dumps({
+        _log_json({
             'stage': 'archive_discovery',
             'supportedFileCount': len(extracted_files),
             'studentCount': total_students,
@@ -663,7 +684,7 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
                 student: [os.path.relpath(path, temp_dir) for path in paths]
                 for student, paths in student_groups.items()
             },
-        }, ensure_ascii=False))
+        })
 
         await _broadcast(webhook_url, {
             'sessionId': session_id,

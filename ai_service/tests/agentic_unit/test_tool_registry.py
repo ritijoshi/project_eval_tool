@@ -138,6 +138,16 @@ class TestIndividualTools:
         assert res["unverifiedCount"] == 1
         assert res["unverified"][0] == "completely fabricated quote not in text"
 
+    def test_verify_evidence_spans_reports_unavailable_for_empty_citations(self):
+        res = tool_verify_evidence_spans("Student answer", [])
+        assert res["verificationAvailable"] is False
+        assert res["verificationRate"] is None
+        assert res["allVerified"] is False
+
+    def test_calculate_final_score_rejects_missing_maximum(self):
+        with pytest.raises(ValueError, match="positive maximum"):
+            tool_calculate_final_score([{"name": "Clarity", "score": 4.0, "maxScore": 0}])
+
     def test_quality_checks_and_human_review(self):
         criteria = [{"name": "Clarity", "maxScore": 5.0}]
         payload = {

@@ -311,7 +311,7 @@ export default function AgenticTelemetryInspector({ result, onClose, onSaveOverr
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
                     <code style={{ color: '#38bdf8', fontWeight: 600 }}>{step.tool || step.id}</code>
-                    <span style={{ color: '#4ade80', fontSize: '0.75rem' }}>✓ Completed</span>
+                    <span style={{ color: '#4ade80', fontSize: '0.75rem' }}>✓ {step.status || 'Completed'}</span>
                   </div>
                   <div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>{step.purpose || step.description}</div>
                 </div>
@@ -550,16 +550,17 @@ export default function AgenticTelemetryInspector({ result, onClose, onSaveOverr
               }}
             />
             <button
+              disabled={overrideScore === '' || !Number.isFinite(Number(overrideScore))}
               onClick={handleApplyOverride}
               style={{
-                background: overrideSuccess ? '#16a34a' : '#4f46e5',
+                background: overrideSuccess ? '#16a34a' : (overrideScore === '' || !Number.isFinite(Number(overrideScore)) ? '#334155' : '#4f46e5'),
                 border: 'none',
                 borderRadius: 8,
                 color: '#fff',
                 padding: '0.45rem 1.1rem',
                 fontSize: '0.82rem',
                 fontWeight: 600,
-                cursor: 'pointer',
+                cursor: overrideScore === '' || !Number.isFinite(Number(overrideScore)) ? 'not-allowed' : 'pointer',
                 transition: 'background 0.2s',
               }}
             >
