@@ -650,6 +650,22 @@ const AssignmentEvaluation = () => {
         <AgenticTelemetryInspector
           result={inspectingResult}
           onClose={() => setInspectingResult(null)}
+          onSaveOverride={(targetResult, newScore, notes) => {
+            setResults((prev) =>
+              prev.map((r) => {
+                if (r._id === targetResult._id || (r.fileName && r.fileName === targetResult.fileName)) {
+                  return {
+                    ...r,
+                    overallScore: newScore,
+                    score: newScore,
+                    scoreExplanation: notes ? `${r.scoreExplanation || ''} [Professor Override: ${notes}]`.trim() : r.scoreExplanation,
+                    needsReview: false,
+                  };
+                }
+                return r;
+              })
+            );
+          }}
         />
       )}
 

@@ -66,6 +66,7 @@ const assignmentEvalSessionSchema = new mongoose.Schema(
       default: [],
     },
     assignmentTitle: { type: String, default: '' },
+    agenticMode: { type: Number, default: 0 },
     courseCode: { type: String, default: '' },
     failureMetadata: {
       errorMessage: { type: String, default: '' },

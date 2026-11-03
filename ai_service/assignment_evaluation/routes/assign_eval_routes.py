@@ -44,6 +44,7 @@ async def trigger_batch_assignment_eval(req: BatchAssignEvalRequest):
             webhook_url=req.webhookUrl,
             assignment_question=req.assignmentQuestion,
             model_answer=req.modelAnswer,
+            agentic_mode=req.agenticMode,
         )
     )
 

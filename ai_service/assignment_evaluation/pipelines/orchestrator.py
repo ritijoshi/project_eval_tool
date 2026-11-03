@@ -121,10 +121,12 @@ def _normalize_score_breakdown(raw: dict):
             normalized[str(key)] = {
                 'score': value.get('score', 0),
                 'maxScore': value.get('maxScore', value.get('max_score', 0)),
-                'reason': value.get('reason', ''),
+                'reason': value.get('reason', value.get('feedback', '')),
+                'evidence': value.get('evidence', ''),
+                'evidenceVerified': value.get('evidenceVerified', None),
             }
         else:
-            normalized[str(key)] = {'score': value, 'maxScore': 0, 'reason': ''}
+            normalized[str(key)] = {'score': value, 'maxScore': 0, 'reason': '', 'evidence': '', 'evidenceVerified': None}
     return normalized
 
 
@@ -538,7 +540,7 @@ SUBMISSION FILE:
 STUDENT SUBMISSION:
 {studentAnswer}
 
-Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence.'''),
+Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evidence: quote exact text snippet from STUDENT SUBMISSION supporting this score), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence.'''),
     ])
     prompt_values = _prompt_values(
         rubric_package, criteria, student_name, file_name, safe_student_content
@@ -573,7 +575,7 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requ
         max_score = float(criterion['maxScore'])
         item = returned.get(name.lower(), {})
         score = float(item['score'])
-        breakdown[name] = {'score': round(score, 2), 'maxScore': round(max_score, 2), 'reason': str(item.get('feedback', '')).strip()}
+        breakdown[name] = {'score': round(score, 2), 'maxScore': round(max_score, 2), 'reason': str(item.get('feedback', item.get('reason', ''))).strip(), 'evidence': str(item.get('evidence', '')).strip(), 'evidenceVerified': None}
         score_total += score
         max_total += max_score
 
@@ -626,7 +628,7 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback), requ
 
 
 
-async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_path: str, assignment_type: str, webhook_url: str, assignment_question: str = '', model_answer: str = ''):
+async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_path: str, assignment_type: str, webhook_url: str, assignment_question: str = '', model_answer: str = '', agentic_mode: int = 0):
     temp_dir = os.path.join(os.path.dirname(zip_path), f"assignment_session_{session_id}")
     os.makedirs(temp_dir, exist_ok=True)
 
@@ -717,7 +719,27 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
                 detected_type = extracted.get('detectedType', 'text')
                 if not student_text:
                     raise ValueError(f'No extractable content in submission: {file_name}')
-                result = await evaluate_single_submission_with_llm(student_text, rubric_package, assignment_type, student_name, file_name)
+                if agentic_mode > 0:
+                    from agentic_eval.orchestrator import default_orchestrator
+                    from agentic_eval.config import ConfigOverride
+                    with ConfigOverride(eval_enabled=True, mode=agentic_mode):
+                        result = await default_orchestrator.evaluate_single_assignment(
+                            student_text=student_text,
+                            rubric_package=rubric_package,
+                            assignment_type=assignment_type or detected_type,
+                            student_name=student_name,
+                            file_name=file_name,
+                        )
+                else:
+                    result = await evaluate_single_submission_with_llm(student_text, rubric_package, assignment_type, student_name, file_name)
+                    result['agenticExecution'] = {
+                        'mode': 0,
+                        'isBaseline': True,
+                        'toolCallCount': 0,
+                        'elapsedSeconds': 0.0,
+                        'evidenceVerificationRate': None,
+                        'specialistAgents': {},
+                    }
                 result['studentName'] = student_name
                 result['fileName'] = file_name
                 result['rollNumber'] = 'UNKNOWN'

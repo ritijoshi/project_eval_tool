@@ -60,6 +60,7 @@ const assignmentStudentResultSchema = new mongoose.Schema(
     reviewFlags: { type: [String], default: [] },
     injectionDetected: { type: Boolean, default: false },
     retryCount: { type: Number, default: 0 },
+    agenticExecution: { type: mongoose.Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
 );

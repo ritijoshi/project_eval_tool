@@ -56,6 +56,8 @@ const normalizeScoreBreakdown = (input) => {
         score: Number(entry.score ?? 0),
         maxScore: Number(entry.maxScore ?? entry.max_score ?? 0),
         reason: entry.reason || entry.feedback || '',
+        evidence: entry.evidence || '',
+        evidenceVerified: entry.evidenceVerified ?? null,
       };
       return acc;
     }, {});
@@ -63,7 +65,7 @@ const normalizeScoreBreakdown = (input) => {
 
   return Object.entries(input).reduce((acc, [key, value]) => {
     if (!value || typeof value !== 'object') {
-      acc[String(key)] = { score: Number(value ?? 0), maxScore: 0, reason: '' };
+      acc[String(key)] = { score: Number(value ?? 0), maxScore: 0, reason: '', evidence: '', evidenceVerified: null };
       return acc;
     }
 
@@ -71,6 +73,8 @@ const normalizeScoreBreakdown = (input) => {
       score: Number(value.score ?? 0),
       maxScore: Number(value.maxScore ?? value.max_score ?? 0),
       reason: value.reason || value.feedback || '',
+      evidence: value.evidence || '',
+      evidenceVerified: value.evidenceVerified ?? null,
     };
     return acc;
   }, {});
@@ -168,6 +172,7 @@ exports.startBatchEvalSession = async (req, res, next) => {
       assignmentTitle: assignment?.title || sessionLabel || 'Assignment Evaluation',
       courseCode: course.courseCode || '',
       status: 'UPLOADED',
+      agenticMode: Number(agenticMode || 0),
     });
 
     const backendBase = (process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/$/, '');
@@ -316,6 +321,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
         reviewFlags: normalizeList(latestResult.reviewFlags),
         injectionDetected: !!latestResult.injectionDetected,
         retryCount: typeof latestResult.retryCount === 'number' ? latestResult.retryCount : 0,
+        agenticExecution: latestResult.agenticExecution || null,
       });
       }
 
@@ -376,6 +382,7 @@ exports.handleAssignmentWebhook = async (req, res, next) => {
                 reviewFlags: normalizeList(result.reviewFlags),
                 injectionDetected: !!result.injectionDetected,
                 retryCount: typeof result.retryCount === 'number' ? result.retryCount : 0,
+                agenticExecution: result.agenticExecution || null,
               },
             },
             upsert: true,
