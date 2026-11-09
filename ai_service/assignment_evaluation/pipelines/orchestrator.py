@@ -48,7 +48,7 @@ DEFAULT_OLLAMA_MODEL = 'qwen3:4b'
 PROMPT_CHAR_BUDGET = 15000
 COMPACT_PROMPT_CHAR_BUDGET = 10000
 MINIMAL_PROMPT_CHAR_BUDGET = 7000
-MAX_COMPLETION_TOKENS = 800
+MAX_COMPLETION_TOKENS = 4096
 
 
 def _truncate_for_prompt(value: str, max_chars: int) -> str:
@@ -183,17 +183,103 @@ def _parse_json_object(raw):
         raise ValueError('LLM response contained malformed JSON') from first_error
 
 
+def _normalize_string_list(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return []
+        if '\n' in cleaned:
+            parts = cleaned.splitlines()
+        elif ';' in cleaned and len(cleaned.split(';')) > 1:
+            parts = cleaned.split(';')
+        else:
+            parts = [cleaned]
+        result = []
+        for p in parts:
+            s = re.sub(r'^\s*[-*•\d.]+\s*', '', p).strip()
+            if s:
+                result.append(s)
+        return result if result else [cleaned]
+    if isinstance(value, (list, tuple)):
+        result = []
+        for item in value:
+            if isinstance(item, str):
+                s = re.sub(r'^\s*[-*•\d.]+\s*', '', item).strip()
+                if s:
+                    result.append(s)
+            elif isinstance(item, (int, float)):
+                result.append(str(item))
+            elif isinstance(item, dict):
+                text = ' - '.join(str(v).strip() for v in item.values() if str(v).strip())
+                if text:
+                    result.append(text)
+        return result
+    if isinstance(value, dict):
+        result = []
+        for k, v in value.items():
+            if isinstance(v, str) and v.strip():
+                result.append(v.strip())
+            elif isinstance(v, (list, tuple)):
+                result.extend(_normalize_string_list(v))
+        return result
+    return []
+
+
+def _canonical_criterion_key(name: str) -> str:
+    cleaned = re.sub(r'[\u2014\u2013\-—:]', ' ', str(name or '')).lower()
+    cleaned = re.sub(r'^(?:part\s+[a-z]|\d+[.)]|\b(criteria|criterion)\b)\s*', '', cleaned)
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
+
+def _match_criterion(name: str, expected_criteria: list) -> dict | None:
+    target_norm = str(name or '').strip().casefold()
+    target_canon = _canonical_criterion_key(name)
+    for crit in expected_criteria:
+        c_name = str(crit['name']).strip().casefold()
+        if c_name == target_norm:
+            return crit
+    for crit in expected_criteria:
+        c_canon = _canonical_criterion_key(crit['name'])
+        if c_canon and (c_canon == target_canon or c_canon in target_canon or target_canon in c_canon):
+            return crit
+    return None
+
+
 def _validate_llm_payload(payload, criteria):
     if not isinstance(payload, dict):
         raise ValueError('LLM response must be a JSON object')
-    returned = payload.get('criteria')
-    if not isinstance(returned, list):
+    raw_criteria = payload.get('criteria')
+    criteria_list = []
+    if isinstance(raw_criteria, list):
+        criteria_list = [c for c in raw_criteria if isinstance(c, dict)]
+    elif isinstance(raw_criteria, dict):
+        for k, v in raw_criteria.items():
+            if isinstance(v, dict):
+                entry = dict(v)
+                entry['name'] = entry.get('name') or k
+                criteria_list.append(entry)
+            elif isinstance(v, (int, float)):
+                criteria_list.append({'name': k, 'score': v, 'feedback': f'Awarded {v} marks'})
+    elif isinstance(payload.get('scoreBreakdown'), dict):
+        for k, v in payload['scoreBreakdown'].items():
+            if isinstance(v, dict):
+                entry = dict(v)
+                entry['name'] = entry.get('name') or k
+                criteria_list.append(entry)
+            elif isinstance(v, (int, float)):
+                criteria_list.append({'name': k, 'score': v, 'feedback': f'Awarded {v} marks'})
+
+    if not criteria_list and not (isinstance(raw_criteria, list) and len(raw_criteria) == 0):
         raise ValueError('LLM response is missing the criteria array')
+
     by_name = {}
-    for item in returned:
+    for item in criteria_list:
         if not isinstance(item, dict) or not str(item.get('name', '')).strip():
             raise ValueError('Each criterion must have a name')
-        key = str(item['name']).strip().casefold()
+        matched = _match_criterion(item['name'], criteria)
+        key = str(matched['name']).strip().casefold() if matched else str(item['name']).strip().casefold()
         if key in by_name:
             raise ValueError(f'Duplicate criterion: {item["name"]}')
         by_name[key] = item
@@ -202,8 +288,11 @@ def _validate_llm_payload(payload, criteria):
     missing = expected - by_name.keys()
     if missing:
         raise ValueError(f'Missing rubric criteria: {", ".join(sorted(missing))}')
+
+    normalized_criteria = []
     for criterion in criteria:
-        item = by_name[str(criterion['name']).strip().casefold()]
+        key = str(criterion['name']).strip().casefold()
+        item = by_name[key]
         try:
             score = float(item.get('score'))
             maximum = float(criterion['maxScore'])
@@ -211,18 +300,30 @@ def _validate_llm_payload(payload, criteria):
             raise ValueError(f'Invalid score for criterion {criterion["name"]}') from exc
         if not math.isfinite(score) or score < 0 or score > maximum:
             raise ValueError(f'Score for criterion {criterion["name"]} must be between 0 and {maximum}')
-        if not isinstance(item.get('feedback'), str) or not item['feedback'].strip():
+        feedback = str(item.get('feedback') or item.get('reason') or item.get('comment') or item.get('explanation') or '').strip()
+        if not feedback:
             raise ValueError(f'Criterion {criterion["name"]} requires feedback')
+        item['name'] = criterion['name']
+        item['score'] = score
+        item['maxScore'] = maximum
+        item['feedback'] = feedback
+        normalized_criteria.append(item)
+
+    payload['criteria'] = normalized_criteria
+
     try:
         payload['confidence'] = normalize_confidence(payload.get('confidence'))
     except InvalidConfidenceError:
         raise
     for field in ('strengths', 'weakAreas', 'mistakes', 'missingConcepts', 'missingKeyPoints',
                   'requiredConcepts', 'conceptsCovered'):
-        if not isinstance(payload.get(field), list):
-            raise ValueError(f'{field} must be an array')
-    if not isinstance(payload.get('feedback'), str) or not payload['feedback'].strip():
+        payload[field] = _normalize_string_list(payload.get(field))
+
+    overall_feedback = str(payload.get('feedback') or payload.get('overallFeedback') or '').strip()
+    if not overall_feedback:
         raise ValueError('feedback is required')
+    payload['feedback'] = overall_feedback
+    payload['overallFeedback'] = overall_feedback
     return payload
 
 
@@ -418,13 +519,25 @@ async def _invoke_ollama(messages):
     return content
 
 
+def _is_json_format_error(exc):
+    msg = str(exc).lower()
+    return any(token in msg for token in (
+        'json_validate_failed', 'failed to validate json', 'failed to generate json',
+        'jsondecodeerror', 'malformed json', 'unterminated', 'badrequest',
+    ))
+
+
 async def _invoke_groq(messages):
-    llm = ChatGroq(
-        model_name=_groq_model(),
-        temperature=0.0,
-        max_tokens=max(MAX_COMPLETION_TOKENS, 1600),
-        model_kwargs={'response_format': {'type': 'json_object'}},
-    )
+    model_name = _groq_model()
+    kwargs = {
+        'model_name': model_name,
+        'temperature': 0.0,
+        'max_tokens': max(MAX_COMPLETION_TOKENS, 4096),
+        'model_kwargs': {'response_format': {'type': 'json_object'}},
+    }
+    if 'gpt-oss' in model_name:
+        kwargs['reasoning_effort'] = 'low'
+    llm = ChatGroq(**kwargs)
     response = await asyncio.to_thread(llm.invoke, messages)
     return getattr(response, 'content', response)
 
@@ -443,8 +556,8 @@ async def _invoke_and_validate(provider, prompt, values, criteria, rubric_packag
             )
             if attempt:
                 attempt_values['studentAnswer'] += (
-                    '\n\nCORRECTION: Return one complete JSON object matching the requested schema. '
-                    'Do not include markdown or commentary.'
+                    f'\n\nCORRECTION: Your previous response was rejected because: {last_error}. '
+                    'Return one complete, valid JSON object matching the requested schema.'
                 )
             messages = prompt.format_messages(**attempt_values)
             raw = (
@@ -467,7 +580,13 @@ async def _invoke_and_validate(provider, prompt, values, criteria, rubric_packag
                 raise
             if attempt == 1:
                 raise
-            if not isinstance(exc, ValueError) and not _is_transient_llm_error(exc):
+            retryable = (
+                isinstance(exc, ValueError)
+                or _is_transient_llm_error(exc)
+                or _is_json_format_error(exc)
+                or is_request_too_large_error(exc)
+            )
+            if not retryable:
                 raise
             await asyncio.sleep(1)
     raise ValueError(f'{provider} evaluation failed validation: {last_error}')
@@ -533,7 +652,20 @@ async def evaluate_single_submission_with_llm(
         )
 
     prompt = ChatPromptTemplate.from_messages([
-        ('system', safety_preamble + '\n\nYou are an academic assignment evaluator. Evaluate exactly one student\'s submission using the assignment question, rubric, and reference answer.\nReturn ONLY valid JSON. Do not copy rubric text into concepts. Do not invent criteria. Include every rubric criterion exactly once, even when its score is zero.\nEach criterion score must be between 0 and its maxScore. overallScore must equal the sum of criterion scores when the rubric is point-based, normalized to 0-100 when needed. Use evidence from the actual student submission. Never use a generic evaluation.'),
+        ('system', safety_preamble + '\n\n'
+         'You are an expert academic evaluator. Evaluate the student\'s submission rigorously against each criterion in the uploaded rubric.\n'
+         'EVALUATION PRINCIPLES:\n'
+         '1. Inspect the student\'s actual code, outputs, markdown explanations, experiments, and results.\n'
+         '2. Evaluate each criterion independently based on concrete submitted evidence. Award partial credit where appropriate.\n'
+         '3. Distinguish between fully correct, partially correct, incorrect, missing, and unsupported implementations.\n'
+         '4. Do not award marks simply because code exists. Verify execution and evidence.\n'
+         '5. Do not invent code, plots, or results absent from the submission.\n'
+         '6. Identify genuine strengths from the student\'s actual work.\n'
+         '7. Identify specific mistakes, flaws, bugs, or omissions.\n'
+         '8. Identify missing concepts that the rubric required but the student omitted.\n'
+         '9. Calculate overallScore as the exact sum of criterion scores.\n'
+         '10. Confidence must be a JSON number between 0.0 and 1.0 reflecting confidence based on submission evidence.\n'
+         '11. Return ONLY a valid JSON object matching the requested schema. Never output markdown outside JSON.'),
         ('human', '''ASSIGNMENT QUESTION:
 {assignmentQuestion}
 
@@ -555,7 +687,29 @@ SUBMISSION FILE:
 STUDENT SUBMISSION:
 {studentAnswer}
 
-Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evidence: quote exact text snippet from STUDENT SUBMISSION supporting this score), requiredConcepts, strengths, weakAreas, mistakes, missingKeyPoints, missingConcepts, conceptsCovered, scoreExplanation, feedback, confidence. Confidence must be a JSON number from 0 to 1, not a percentage.'''),
+Return a valid JSON object adhering strictly to this schema:
+{{
+  "overallScore": <number, sum of criterion scores>,
+  "confidence": <number between 0.0 and 1.0>,
+  "criteria": [
+    {{
+      "name": "<exact criterion name from rubric>",
+      "score": <number between 0 and maxScore>,
+      "maxScore": <number>,
+      "feedback": "<detailed criterion evaluation and rationale>",
+      "evidence": "<exact quotation or code snippet from student submission, or 'No evidence found' if absent>"
+    }}
+  ],
+  "strengths": ["<specific strength 1>", "<specific strength 2>"],
+  "mistakes": ["<specific mistake 1>", "<specific mistake 2>"],
+  "missingConcepts": ["<specific missing concept 1>"],
+  "weakAreas": ["<specific weak area 1>"],
+  "missingKeyPoints": ["<specific missing key point 1>"],
+  "requiredConcepts": ["<required concept 1>"],
+  "conceptsCovered": ["<covered concept 1>"],
+  "scoreExplanation": "<concise explanation of scoring breakdown>",
+  "feedback": "<personalized, constructive overall feedback summarizing strengths and concrete steps for improvement>"
+}}'''),
     ])
     prompt_values = _prompt_values(
         rubric_package, criteria, student_name, file_name, safe_student_content
@@ -583,20 +737,31 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evide
         raise ValueError(f'LLM evaluation failed validation: {last_error}')
     returned = {str(item.get('name', '')).strip().lower(): item for item in payload.get('criteria', []) if isinstance(item, dict)}
     breakdown = {}
+    criteria_list = []
     score_total = 0.0
     max_total = 0.0
     for criterion in criteria:
         name = criterion['name']
         max_score = float(criterion['maxScore'])
         item = returned.get(name.lower(), {})
-        score = float(item['score'])
+        score = float(item.get('score', 0.0))
+        reason = str(item.get('feedback', item.get('reason', ''))).strip()
+        evidence = str(item.get('evidence', '')).strip()
         breakdown[name] = {
             'score': round(score, 2),
             'maxScore': round(max_score, 2),
-            'reason': str(item.get('feedback', item.get('reason', ''))).strip(),
-            'evidence': str(item.get('evidence', '')).strip(),
+            'reason': reason,
+            'evidence': evidence,
             'evidenceVerified': None,
         }
+        criteria_list.append({
+            'name': name,
+            'score': round(score, 2),
+            'maxScore': round(max_score, 2),
+            'feedback': reason,
+            'evidence': evidence,
+            'evidenceVerified': None,
+        })
         score_total += score
         max_total += max_score
 
@@ -629,6 +794,7 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evide
             else 'F'
         ),
         'confidence': confidence,
+        'criteria': criteria_list,
         'scoreBreakdown': breakdown,
         'requiredConcepts': payload.get('requiredConcepts', []),
         'strengths': payload.get('strengths', []),
@@ -639,6 +805,7 @@ Return JSON with: overallScore, criteria (name, score, maxScore, feedback, evide
         'conceptsCovered': payload.get('conceptsCovered', []),
         'scoreExplanation': payload.get('scoreExplanation', ''),
         'overallFeedback': payload.get('feedback', ''),
+        'feedback': payload.get('feedback', ''),
         'submissionType': assignment_type or 'text',
         'success': True,
         'needsReview': needs_review,

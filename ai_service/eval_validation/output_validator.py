@@ -148,10 +148,33 @@ def validate_llm_output(
     # ── Build lookup from LLM response ─────────────────────────────────────
     raw_criteria = raw_response.get("criteria")
     if not isinstance(raw_criteria, list):
-        return OutputValidationResult(
-            valid=False,
-            validation_errors=["LLM response is missing the 'criteria' array."],
-        )
+        if isinstance(raw_response.get("scoreBreakdown"), dict):
+            raw_criteria = [
+                {
+                    "name": k,
+                    "score": v.get("score") if isinstance(v, dict) else v,
+                    "maxScore": v.get("maxScore") if isinstance(v, dict) else 0,
+                    "feedback": v.get("reason", v.get("feedback", "")) if isinstance(v, dict) else "",
+                    "evidence": v.get("evidence", "") if isinstance(v, dict) else "",
+                }
+                for k, v in raw_response["scoreBreakdown"].items()
+            ]
+        elif isinstance(raw_criteria, dict):
+            raw_criteria = [
+                {
+                    "name": k,
+                    "score": v.get("score") if isinstance(v, dict) else v,
+                    "maxScore": v.get("maxScore") if isinstance(v, dict) else 0,
+                    "feedback": v.get("feedback", v.get("reason", "")) if isinstance(v, dict) else "",
+                    "evidence": v.get("evidence", "") if isinstance(v, dict) else "",
+                }
+                for k, v in raw_criteria.items()
+            ]
+        else:
+            return OutputValidationResult(
+                valid=False,
+                validation_errors=["LLM response is missing the 'criteria' array."],
+            )
 
     llm_by_name: dict[str, dict] = {}
     seen_names: set[str] = set()
@@ -181,6 +204,15 @@ def validate_llm_output(
     for criterion in trusted_criteria:
         key = _normalise_name(criterion.name)
         llm_item = llm_by_name.get(key)
+        if llm_item is None:
+            c_key = re.sub(r'[\u2014\u2013\-—:]', ' ', key)
+            c_key = re.sub(r'\s+', ' ', c_key).strip()
+            for seen_k, seen_v in llm_by_name.items():
+                c_seen = re.sub(r'[\u2014\u2013\-—:]', ' ', seen_k)
+                c_seen = re.sub(r'\s+', ' ', c_seen).strip()
+                if c_key == c_seen or c_key.startswith(c_seen) or c_seen.startswith(c_key):
+                    llm_item = seen_v
+                    break
 
         if llm_item is None:
             errors.append(f"Criterion '{criterion.name}' is missing from LLM response.")

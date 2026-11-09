@@ -35,11 +35,24 @@ export const getAssignmentEvalResults = async (sessionId) => {
 };
 
 export const exportAssignmentEvalReport = async (sessionId) => {
-  const response = await axios.get(`${API_URL}/${sessionId}/export`, {
-    headers: authHeaders(),
-    responseType: 'blob',
-  });
-  return response.data;
+  try {
+    const response = await axios.get(`${API_URL}/${sessionId}/export`, {
+      headers: authHeaders(),
+      responseType: 'blob',
+    });
+    return response.data;
+  } catch (err) {
+    if (err.response?.data instanceof Blob) {
+      try {
+        const text = await err.response.data.text();
+        const json = JSON.parse(text);
+        if (json.message) err.message = json.message;
+      } catch {
+        // Not JSON
+      }
+    }
+    throw err;
+  }
 };
 
 export const triggerSingleEval = async (submissionId, assignmentId) => {
@@ -66,19 +79,33 @@ export const listCourseReports = async (courseId) => {
 };
 
 export const downloadSavedReport = async (reportId, fileName) => {
-  const response = await axios.get(`${API_URL}/reports/${reportId}/download`, {
-    headers: authHeaders(),
-    responseType: 'blob',
-  });
-  const blob = response.data;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName || 'eval_report.xlsx';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try {
+    const response = await axios.get(`${API_URL}/reports/${reportId}/download`, {
+      headers: authHeaders(),
+      responseType: 'blob',
+    });
+    const blob = response.data;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName || 'eval_report.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (err) {
+    if (err.response?.data instanceof Blob) {
+      try {
+        const text = await err.response.data.text();
+        const json = JSON.parse(text);
+        if (json.message) err.message = json.message;
+      } catch {
+        // Not JSON
+      }
+    }
+    throw err;
+  }
 };
 
 // Feature 4 — Assignment Leaderboard

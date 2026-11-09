@@ -38,10 +38,13 @@ const ReportHistoryPanel = ({ courseId, courseCode }) => {
 
   const handleDownload = async (report) => {
     setDownloadingId(report._id);
+    setError('');
     try {
       await downloadSavedReport(report._id, report.fileName);
-    } catch {
-      // silent
+    } catch (err) {
+      console.error('Failed to download saved report:', err);
+      const msg = err?.response?.data?.message || err?.message || 'Download failed. Please try again.';
+      setError(`Download failed for ${report.fileName || 'report'}: ${msg}`);
     } finally {
       setDownloadingId(null);
     }

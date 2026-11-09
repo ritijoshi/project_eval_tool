@@ -103,6 +103,7 @@ const AssignmentEvaluation = () => {
 
   // Export
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   const pollingRef = useRef(null);
 
@@ -301,22 +302,27 @@ const AssignmentEvaluation = () => {
 
   // ─── Export current session ───────────────────────────────────────────────
   const handleExport = async () => {
-    if (!activeSessionId) return;
+    const targetSessionId = activeSessionId || sessionInfo?._id;
+    if (!targetSessionId) return;
     setExporting(true);
+    setExportError('');
     try {
-      const blob = await exportAssignmentEvalReport(activeSessionId);
+      const blob = await exportAssignmentEvalReport(targetSessionId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      const courseCode = activeCourse?.courseCode || 'eval';
+      const courseCode = activeCourse?.courseCode || sessionInfo?.courseCode || 'eval';
       const title = sessionInfo?.assignmentTitle || sessionInfo?.sessionLabel || 'assignment';
-      a.download = `${courseCode}_${title}_EvalReport.xlsx`;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      a.download = `${courseCode}_${title}_EvalReport_${dateStr}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch {
-      // silent
+    } catch (err) {
+      console.error('Failed to export Excel report:', err);
+      const msg = err?.response?.data?.message || err?.message || 'Failed to export Excel report. Please try again.';
+      setExportError(msg);
     } finally {
       setExporting(false);
     }
@@ -511,13 +517,14 @@ const AssignmentEvaluation = () => {
                 </span>
               )}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {sessionInfo?.status === 'COMPLETED' && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {(results.length > 0 || ['COMPLETED', 'PARTIAL'].includes(sessionInfo?.status)) && (
                 <>
                   <button
                     onClick={handleLoadLeaderboard}
                     disabled={leaderboardLoading}
                     style={tabBtn(activeTab === 'leaderboard')}
+                    title="View Leaderboard"
                   >
                     🏆 Leaderboard
                   </button>
@@ -525,16 +532,27 @@ const AssignmentEvaluation = () => {
                     onClick={handleExport}
                     disabled={exporting}
                     style={tabBtn(false, '#059669')}
+                    title="Export session results to Excel (.xlsx)"
                   >
-                    {exporting ? '⏳…' : '⬇ Export Excel'}
+                    {exporting ? '⏳ Exporting…' : '⬇ Export Excel'}
                   </button>
                 </>
               )}
-              <button onClick={() => setActiveTab('results')} style={tabBtn(activeTab === 'results')}>
+              <button
+                onClick={() => setActiveTab('results')}
+                style={tabBtn(activeTab === 'results')}
+                title="View Student Results"
+              >
                 📋 Results
               </button>
             </div>
           </div>
+
+          {exportError && (
+            <p style={{ margin: 0, padding: '0.5rem 1.5rem', color: '#f87171', fontSize: '0.8rem', background: 'rgba(248,113,113,0.08)', borderBottom: '1px solid rgba(248,113,113,0.2)' }}>
+              ⚠️ {exportError}
+            </p>
+          )}
 
           {pollingStatus && (
             <p style={{ margin: 0, padding: '0.5rem 1.5rem', color: '#94a3b8', fontSize: '0.8rem', borderBottom: '1px solid rgba(30,41,59,0.6)' }}>

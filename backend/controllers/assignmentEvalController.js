@@ -657,12 +657,16 @@ async function generateExcelReport(session, results) {
 
   // Fixed columns first, then one column per criterion, then feedback columns
   const fixedCols = [
-    { header: 'Student Name',        key: 'studentName',    width: 24 },
-    { header: 'Submission Type',     key: 'submissionType', width: 16 },
-    { header: 'Overall Score',       key: 'scoreDisplay',   width: 16 },
-    { header: 'Grade',               key: 'gradeLabel',     width: 10 },
-    { header: 'Confidence',          key: 'confidence',     width: 12 },
-    { header: 'Status',              key: 'status',         width: 14 },
+    { header: 'Student Name',             key: 'studentName',    width: 26 },
+    { header: 'Student ID / Roll No',     key: 'rollNumber',     width: 20 },
+    { header: 'Submission Filename',      key: 'fileName',       width: 32 },
+    { header: 'Submission Type',          key: 'submissionType', width: 16 },
+    { header: 'Overall Score',            key: 'score',          width: 14 },
+    { header: 'Maximum Marks',            key: 'maxScore',       width: 14 },
+    { header: 'Score Summary',            key: 'scoreDisplay',   width: 16 },
+    { header: 'Grade',                    key: 'gradeLabel',     width: 10 },
+    { header: 'Confidence',               key: 'confidence',     width: 12 },
+    { header: 'Status',                   key: 'status',         width: 14 },
   ];
 
   const criterionCols = criteria.map((c) => ({
@@ -710,26 +714,40 @@ async function generateExcelReport(session, results) {
     const isFailed = r.evaluationStatus === 'FAILED';
     if (isFailed) failed.push(r); else completed.push(r);
 
+    const numericScore = typeof r.score === 'number'
+      ? r.score
+      : typeof r.overallScore === 'number'
+        ? r.overallScore
+        : null;
+
+    const maxScore = typeof r.maxScore === 'number' ? r.maxScore : 100;
+
     const scoreDisplay = isFailed
       ? 'FAILED'
-      : `${r.score ?? 'N/A'}/${r.maxScore ?? 100}`;
+      : numericScore != null
+        ? `${numericScore}/${maxScore}`
+        : `N/A/${maxScore}`;
 
     const confidence = r.confidence != null
       ? `${(r.confidence <= 1 ? r.confidence * 100 : r.confidence).toFixed(0)}%`
       : 'N/A';
 
     const rowData = {
-      studentName: r.studentName,
+      studentName: r.studentName || 'Unknown',
+      rollNumber: r.rollNumber || '—',
+      fileName: r.fileName || '—',
       submissionType: r.submissionType || 'text',
+      score: isFailed ? 'FAILED' : (numericScore ?? 'N/A'),
+      maxScore: maxScore,
       scoreDisplay,
       gradeLabel: r.gradeLabel || '',
       confidence,
-      status: r.evaluationStatus,
+      status: r.evaluationStatus || 'COMPLETED',
       strengths:             (r.strengths || []).join(' | ') || 'None',
       mistakes:              (r.mistakes || []).join(' | ') || 'None',
       weakAreas:             (r.weakAreas || []).join(' | ') || 'None',
       missingConcepts:       (r.missingConcepts || []).join(' | ') || 'None',
-      overallFeedback:       r.overallFeedback || 'N/A',
+      overallFeedback:       r.overallFeedback || r.scoreExplanation || 'N/A',
     };
 
     // Per-criterion scores
@@ -750,11 +768,13 @@ async function generateExcelReport(session, results) {
 
     // Score colour coding
     if (isFailed) {
+      row.getCell('score').font = { color: { argb: 'FFB00020' }, bold: true };
       row.getCell('scoreDisplay').font = { color: { argb: 'FFB00020' }, bold: true };
       row.getCell('status').font = { color: { argb: 'FFB00020' }, bold: true };
-    } else if (r.maxScore > 0) {
-      const pct = (r.score / r.maxScore) * 100;
+    } else if (typeof numericScore === 'number' && maxScore > 0) {
+      const pct = (numericScore / maxScore) * 100;
       const argb = pct >= 80 ? 'FF16A34A' : pct >= 50 ? 'FFB45309' : 'FFB00020';
+      row.getCell('score').font = { color: { argb } };
       row.getCell('scoreDisplay').font = { color: { argb } };
     }
 
@@ -792,7 +812,7 @@ async function generateExcelReport(session, results) {
   });
 
   summaryRows.forEach(([label, value]) => {
-    const r = sheet.addRow({ studentName: label, submissionType: String(value) });
+    const r = sheet.addRow({ studentName: label, rollNumber: String(value) });
     r.height = 22;
     r.alignment = { vertical: 'middle' };
     r.eachCell({ includeEmpty: true }, (cell) => {
@@ -847,15 +867,48 @@ exports.listCourseReports = async (req, res, next) => {
 // GET /api/assignment-eval/reports/:reportId/download
 exports.downloadReport = async (req, res, next) => {
   try {
-    const report = await AssignmentEvalReport.findOne({
+    let report = await AssignmentEvalReport.findOne({
       _id: req.params.reportId,
       professorId: req.user._id,
     });
+    if (!report && req.params.reportId) {
+      // Fallback: Check if report exists and requester is the course instructor or admin
+      const anyReport = await AssignmentEvalReport.findById(req.params.reportId);
+      if (anyReport) {
+        if (req.user?.role === 'admin') {
+          report = anyReport;
+        } else {
+          const course = await Course.findById(anyReport.courseId).lean();
+          if (course && course.professor && course.professor.toString() === req.user._id.toString()) {
+            report = anyReport;
+          }
+        }
+      }
+    }
     if (!report) {
       return res.status(404).json({ success: false, message: 'Report not found' });
     }
+
+    // Auto-regenerate report on the fly if physical file is missing from disk but session data is available
     if (!fs.existsSync(report.filePath)) {
-      return res.status(410).json({ success: false, message: 'Report file no longer on disk' });
+      const session = await AssignmentEvalSession.findById(report.sessionId).lean();
+      if (session) {
+        const results = await AssignmentStudentResult.find({ sessionId: report.sessionId })
+          .sort({ evaluatedAt: -1 })
+          .lean();
+        if (results && results.length > 0) {
+          const buffer = await generateExcelReport(session, results);
+          const dir = path.dirname(report.filePath);
+          if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+          }
+          fs.writeFileSync(report.filePath, buffer);
+        }
+      }
+    }
+
+    if (!fs.existsSync(report.filePath)) {
+      return res.status(410).json({ success: false, message: 'Report file no longer on disk and cannot be regenerated' });
     }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${report.fileName}"`);
