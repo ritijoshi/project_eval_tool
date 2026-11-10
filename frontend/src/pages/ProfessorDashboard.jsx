@@ -1033,8 +1033,8 @@ const ProfessorDashboard = () => {
                 className="prof-select"
               >
                 <option value="all">All Courses</option>
-                {courses.map((course) => (
-                  <option key={course._id} value={course._id}>{course.title}</option>
+                {courses.map((course, idx) => (
+                  <option key={course._id || course.id || `course-${idx}`} value={course._id || course.id}>{course.title}</option>
                 ))}
               </select>
             </div>
@@ -1046,7 +1046,7 @@ const ProfessorDashboard = () => {
                 className="prof-select"
               >
                 <option>All Students</option>
-                {analytics?.students?.map((s) => (<option key={s.id}>{s.name}</option>))}
+                {analytics?.students?.map((s, idx) => (<option key={s.id || s._id || s.name || `student-opt-${idx}`}>{s.name}</option>))}
               </select>
             </div>
             <div className="prof-filter-group">
@@ -1057,7 +1057,7 @@ const ProfessorDashboard = () => {
                 className="prof-select"
               >
                 <option>All Topics</option>
-                {analytics?.topicPerformance?.map((t) => (<option key={t.topic}>{t.topic}</option>))}
+                {analytics?.topicPerformance?.map((t, idx) => (<option key={t.topic || `topic-opt-${idx}`}>{t.topic}</option>))}
               </select>
             </div>
             <button
@@ -1302,8 +1302,8 @@ const ProfessorDashboard = () => {
                       <h4 style={{ marginBottom: '0.5rem' }}>Most Difficult Topics</h4>
                       {Array.isArray(courseProgressAnalytics.difficultTopics) && courseProgressAnalytics.difficultTopics.length > 0 ? (
                         <div style={{ display: 'grid', gap: '0.45rem' }}>
-                          {courseProgressAnalytics.difficultTopics.slice(0, 6).map((topic) => (
-                            <div key={topic.topicName} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem', border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
+                          {courseProgressAnalytics.difficultTopics.slice(0, 6).map((topic, idx) => (
+                            <div key={topic.topicName || `diff-topic-${idx}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem', border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
                               <span>{topic.topicName}</span>
                               <strong>{Math.round(topic.averageMastery || 0)}%</strong>
                             </div>
@@ -1318,8 +1318,8 @@ const ProfessorDashboard = () => {
                       <h4 style={{ marginBottom: '0.5rem' }}>Students Needing Help</h4>
                       {Array.isArray(courseProgressAnalytics.atRiskStudents) && courseProgressAnalytics.atRiskStudents.length > 0 ? (
                         <div style={{ display: 'grid', gap: '0.45rem' }}>
-                          {courseProgressAnalytics.atRiskStudents.slice(0, 6).map((student) => (
-                            <div key={student.studentId} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
+                          {courseProgressAnalytics.atRiskStudents.slice(0, 6).map((student, idx) => (
+                            <div key={student.studentId || student._id || student.id || `at-risk-${idx}`} style={{ border: '1px solid var(--border)', borderRadius: '8px', padding: '0.5rem 0.65rem' }}>
                               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem' }}>
                                 <span>{student.name}</span>
                                 <strong>{Math.round(student.overallProgress || 0)}%</strong>
@@ -1480,8 +1480,8 @@ const ProfessorDashboard = () => {
             <div className="prof-table-panel">
               <h3 className="prof-table-header">Leaderboard</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', marginBottom: '1rem' }}>
-                {leaderboardRows.slice(0, 5).map((entry) => (
-                  <div key={entry.id} style={{ display: 'grid', gridTemplateColumns: '56px 1fr 100px', alignItems: 'center', padding: '0.65rem 0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                {leaderboardRows.slice(0, 5).map((entry, idx) => (
+                  <div key={entry.id || entry._id || `entry-${idx}`} style={{ display: 'grid', gridTemplateColumns: '56px 1fr 100px', alignItems: 'center', padding: '0.65rem 0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
                     <strong style={{ color: entry.rank <= 3 ? 'var(--primary)' : 'var(--text-main)' }}>#{entry.rank}</strong>
                     <span>{entry.name}</span>
                     <span>{entry.score}%</span>
@@ -1503,8 +1503,8 @@ const ProfessorDashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {analytics.students.map((student) => (
-                      <tr key={student.id} className="prof-table-body-row">
+                    {analytics.students.map((student, idx) => (
+                      <tr key={student.id || student._id || `student-row-${idx}`} className="prof-table-body-row">
                         <td className="prof-table-cell prof-table-name">
                           <div className="flex items-center gap-2">
                             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-xs font-bold">
@@ -1628,8 +1628,8 @@ const ProfessorDashboard = () => {
                   </div>
                 ) : (
                   <div className="prof-rubric-items">
-                    {rubrics.map((rubric) => (
-                      <div key={rubric._id || rubric.id} className="prof-rubric-item">
+                    {rubrics.map((rubric, idx) => (
+                      <div key={rubric._id || rubric.id || `rubric-${idx}`} className="prof-rubric-item">
                         <div className="prof-rubric-item-header">
                           <h3 className="prof-rubric-item-name">{rubric.name}</h3>
                           <span className="prof-rubric-score">{rubric.courseKey || 'general'} • Max: {rubric.maxScore}</span>
@@ -1805,8 +1805,8 @@ const ProfessorDashboard = () => {
                 <div style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
                   <h3 className="font-semibold mb-2">Recent Updates</h3>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {weeklyUpdateHistory.map((item) => (
-                      <div key={item._id} style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--surface-hover)' }}>
+                    {weeklyUpdateHistory.map((item, idx) => (
+                      <div key={item._id || item.id || `update-${idx}`} style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: '10px', background: 'var(--surface-hover)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
                           <strong>{item.weekLabel || 'Weekly Update'}</strong>
                           <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>{item.courseKey}</span>
@@ -1877,8 +1877,8 @@ const ProfessorDashboard = () => {
                   </div>
                 ) : (
                   <div className="prof-rubric-items">
-                    {courses.map((course) => (
-                      <div key={course._id} className="prof-rubric-item">
+                    {courses.map((course, idx) => (
+                      <div key={course._id || course.id || `course-card-${idx}`} className="prof-rubric-item">
                         <div className="prof-rubric-item-header">
                           <h3 className="prof-rubric-item-name">{course.title}</h3>
                           <span className="prof-rubric-score">Code: {course.courseCode}</span>
@@ -2043,8 +2043,10 @@ const ProfessorDashboard = () => {
                   <p style={{ color: 'var(--muted)' }}>No assignments created yet.</p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {assignments.map((assignment) => (
-                      <div key={assignment._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                    {assignments.map((assignment, aIdx) => {
+                      const assignmentId = assignment._id || assignment.id || `assignment-${aIdx}`;
+                      return (
+                      <div key={assignmentId} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '1rem' }}>
                           <div>
                             <h4 className="font-semibold">{assignment.title}</h4>
@@ -2070,9 +2072,9 @@ const ProfessorDashboard = () => {
                           <div style={{ marginTop: '0.75rem' }}>
                             <p className="text-sm font-semibold">Attachments</p>
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
-                              {assignment.attachments.map((file) => (
+                              {assignment.attachments.map((file, fileIdx) => (
                                 <a
-                                  key={file.url}
+                                  key={file.url || file._id || file.filename || file.originalName || `att-${fileIdx}`}
                                   href={`${API_BASE}${file.url}`}
                                   target="_blank"
                                   rel="noreferrer"
@@ -2088,24 +2090,26 @@ const ProfessorDashboard = () => {
                           <button
                             className="btn-secondary"
                             onClick={() => {
-                              const next = expandedAssignmentId === assignment._id ? '' : assignment._id;
+                              const next = expandedAssignmentId === assignmentId ? '' : assignmentId;
                               setExpandedAssignmentId(next);
-                              if (next) fetchAssignmentSubmissions(assignment._id);
+                              if (next) fetchAssignmentSubmissions(assignmentId);
                             }}
                           >
-                            {expandedAssignmentId === assignment._id ? 'Hide Submissions' : 'View Submissions'}
+                            {expandedAssignmentId === assignmentId ? 'Hide Submissions' : 'View Submissions'}
                           </button>
                         </div>
-                        {expandedAssignmentId === assignment._id && (
+                        {expandedAssignmentId === assignmentId && (
                           <div style={{ marginTop: '0.75rem' }}>
-                            {assignmentSubmissionsLoading[assignment._id] ? (
+                            {assignmentSubmissionsLoading[assignmentId] ? (
                               <p style={{ color: 'var(--muted)' }}>Loading submissions...</p>
-                            ) : (assignmentSubmissions[assignment._id] || []).length === 0 ? (
+                            ) : (assignmentSubmissions[assignmentId] || []).length === 0 ? (
                               <p style={{ color: 'var(--muted)' }}>No submissions yet.</p>
                             ) : (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                {(assignmentSubmissions[assignment._id] || []).map((submission) => (
-                                  <div key={submission._id} style={{ padding: '0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                                {(assignmentSubmissions[assignmentId] || []).map((submission, sIdx) => {
+                                  const submissionId = submission._id || submission.id || `sub-${sIdx}`;
+                                  return (
+                                  <div key={submissionId} style={{ padding: '0.75rem', borderRadius: '10px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
                                       <strong>{submission.student?.name || 'Student'} · v{submission.version}</strong>
                                       <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
@@ -2114,9 +2118,9 @@ const ProfessorDashboard = () => {
                                     </div>
                                     {submission.files?.length > 0 && (
                                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                                        {submission.files.map((file) => (
+                                        {submission.files.map((file, fileIdx) => (
                                           <a
-                                            key={file.url}
+                                            key={file.url || file._id || file.filename || file.originalName || `sf-${fileIdx}`}
                                             href={`${API_BASE}${file.url}`}
                                             target="_blank"
                                             rel="noreferrer"
@@ -2132,11 +2136,11 @@ const ProfessorDashboard = () => {
                                         type="number"
                                         className="glass-input"
                                         placeholder={Number.isFinite(Number(assignment.maxPoints)) ? `Score (0-${Number(assignment.maxPoints)})` : 'Score'}
-                                        value={gradeInputs[submission._id]?.score ?? submission.score ?? ''}
+                                        value={gradeInputs[submissionId]?.score ?? submission.score ?? ''}
                                         onChange={(e) =>
                                           setGradeInputs((prev) => ({
                                             ...prev,
-                                            [submission._id]: { ...prev[submission._id], score: e.target.value },
+                                            [submissionId]: { ...prev[submissionId], score: e.target.value },
                                           }))
                                         }
                                       />
@@ -2144,11 +2148,11 @@ const ProfessorDashboard = () => {
                                         type="text"
                                         className="glass-input"
                                         placeholder="Feedback"
-                                        value={gradeInputs[submission._id]?.feedback ?? submission.feedback ?? ''}
+                                        value={gradeInputs[submissionId]?.feedback ?? submission.feedback ?? ''}
                                         onChange={(e) =>
                                           setGradeInputs((prev) => ({
                                             ...prev,
-                                            [submission._id]: { ...prev[submission._id], feedback: e.target.value },
+                                            [submissionId]: { ...prev[submissionId], feedback: e.target.value },
                                           }))
                                         }
                                       />
@@ -2156,18 +2160,20 @@ const ProfessorDashboard = () => {
                                     <button
                                       className="btn-primary"
                                       style={{ marginTop: '0.5rem' }}
-                                      onClick={() => saveSubmissionGrade(assignment._id, submission._id)}
+                                      onClick={() => saveSubmissionGrade(assignmentId, submissionId)}
                                     >
                                       Save Grade
                                     </button>
                                   </div>
-                                ))}
+                                );
+                                })}
                               </div>
                             )}
                           </div>
                         )}
                       </div>
-                    ))}
+                    );
+                    })}
                   </div>
                 )}
               </div>
@@ -2214,8 +2220,8 @@ const ProfessorDashboard = () => {
                       }}
                     >
                       <option value="">Select a quiz</option>
-                      {practiceTests.map((t) => (
-                        <option key={t._id} value={t._id}>
+                      {practiceTests.map((t, idx) => (
+                        <option key={t._id || t.id || `test-opt-${idx}`} value={t._id || t.id}>
                           {t.title}
                         </option>
                       ))}
@@ -2334,9 +2340,9 @@ const ProfessorDashboard = () => {
                         <div>
                           <h4 className="font-semibold" style={{ marginBottom: '0.75rem' }}>Recent attempts</h4>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                            {analytics.recentAttempts.map((attempt) => (
+                            {analytics.recentAttempts.map((attempt, idx) => (
                               <div
-                                key={attempt.attemptId}
+                                key={attempt.attemptId || attempt._id || attempt.id || `recent-attempt-${idx}`}
                                 style={{
                                   padding: '0.9rem',
                                   borderRadius: '12px',
@@ -2429,7 +2435,7 @@ const ProfessorDashboard = () => {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                     {practiceQuestions.map((q, qi) => (
                       <div
-                        key={qi}
+                        key={q?._id || `pq-${qi}`}
                         className="glass-card"
                         style={{ padding: '1rem', borderRadius: '12px' }}
                       >
@@ -2450,7 +2456,7 @@ const ProfessorDashboard = () => {
 
                         <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                           {(Array.isArray(q?.options) ? q.options : []).map((opt, oi) => (
-                            <div key={oi} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <div key={`opt-${qi}-${oi}`} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                               <input
                                 type="radio"
                                 name={`correct-${qi}`}
@@ -2482,7 +2488,7 @@ const ProfessorDashboard = () => {
                           >
                             <option value="">Correct answer</option>
                             {(Array.isArray(q?.options) ? q.options : []).map((opt, oi) => (
-                              <option key={oi} value={String(oi)}>
+                              <option key={`opt-val-${qi}-${oi}`} value={String(oi)}>
                                 Option {oi + 1}{opt ? `: ${String(opt).slice(0, 60)}` : ''}
                               </option>
                             ))}
@@ -2543,8 +2549,8 @@ const ProfessorDashboard = () => {
                   <p style={{ color: 'var(--muted)' }}>No practice tests yet for this course.</p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {practiceTests.map((t) => (
-                      <div key={t._id} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
+                    {practiceTests.map((t, idx) => (
+                      <div key={t._id || t.id || `test-card-${idx}`} className="glass-card" style={{ padding: '1rem', borderRadius: '12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'start' }}>
                           <div>
                             <h4 className="font-semibold">{t.title}</h4>
@@ -2617,8 +2623,8 @@ const ProfessorDashboard = () => {
                   <p style={{ color: 'var(--muted)' }}>No attempts yet.</p>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {practiceResults.slice(0, 12).map((r) => (
-                      <div key={r.attemptId} style={{ padding: '0.9rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
+                    {practiceResults.slice(0, 12).map((r, idx) => (
+                      <div key={r.attemptId || r._id || r.id || `prac-res-${idx}`} style={{ padding: '0.9rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-hover)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
                           <div>
                             <strong>{r.student?.name || r.student?.email || 'Student'}</strong>
@@ -2687,9 +2693,9 @@ const ProfessorDashboard = () => {
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                    {evaluations.map((evaluation) => (
+                    {evaluations.map((evaluation, idx) => (
                       <div
-                        key={evaluation._id}
+                        key={evaluation._id || evaluation.id || `eval-${idx}`}
                         onClick={() => setSelectedEvaluation(evaluation._id)}
                         style={{
                           padding: '1.5rem',

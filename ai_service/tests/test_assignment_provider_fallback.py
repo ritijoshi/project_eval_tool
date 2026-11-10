@@ -41,6 +41,15 @@ class QuotaError(Exception):
         return '429 daily token quota exceeded'
 
 
+@pytest.fixture(autouse=True)
+def _isolate_providers(monkeypatch):
+    """Ensure tests start with a clean provider state."""
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.delenv('OPENAI_API_KEYS', raising=False)
+    monkeypatch.delenv('GROQ_API_KEYS', raising=False)
+
+
+
 def test_groq_daily_quota_switches_to_ollama(monkeypatch):
     monkeypatch.setenv('GROQ_API_KEY', 'configured')
     monkeypatch.setenv('OLLAMA_ENABLED', 'true')

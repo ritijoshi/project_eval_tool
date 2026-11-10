@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import shutil
 import json
@@ -6,19 +7,81 @@ import re
 import zipfile
 from datetime import datetime
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# Ensure ai_service directory is in sys.path so all internal modules resolve cleanly
+_AI_SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _AI_SERVICE_DIR not in sys.path:
+    sys.path.insert(0, _AI_SERVICE_DIR)
+
 # Load .env FIRST so GROQ_API_KEY and OPENAI_API_KEY are available before any placeholder logic
 try:
     from dotenv import load_dotenv
-    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'), override=True)
+    load_dotenv(dotenv_path=os.path.join(_AI_SERVICE_DIR, '.env'), override=True)
     print("[AI Service] .env loaded successfully.")
 except ImportError:
     print("[AI Service] WARNING: python-dotenv not installed. Install with: pip install python-dotenv")
+
+try:
+    from key_rotator import key_rotator
+    if key_rotator is not None:
+        key_rotator.reload()
+except ImportError:
+    key_rotator = None
+
 import pdfplumber
+
+# Robust Import Block
+VECTORS_AVAILABLE = False
+LLM_AVAILABLE = False
+
+try:
+    from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_community.vectorstores import FAISS
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain.chains.combine_documents import create_stuff_documents_chain
+    from langchain.chains import create_retrieval_chain
+    from langchain_core.messages import HumanMessage, AIMessage
+    from langchain_core.output_parsers import JsonOutputParser
+    VECTORS_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Vector / embedding integration unavailable ({e}). Fallback Mock AI active.")
+
+try:
+    from langchain_groq import ChatGroq
+    LLM_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Groq LLM integration unavailable ({e}). Mock AI will be used.")
+
+IMAGE_TO_TEXT_AVAILABLE = False
+try:
+    from PIL import Image
+    import pytesseract
+    IMAGE_TO_TEXT_AVAILABLE = True
+except ImportError:
+    pass
+
+def openai_embeddings_enabled() -> bool:
+    if not VECTORS_AVAILABLE:
+        return False
+    if key_rotator:
+        return key_rotator.has_available_keys("openai")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    return bool(openai_key) and openai_key != "sk-placeholder"
+
+def groq_llm_enabled() -> bool:
+    if not LLM_AVAILABLE:
+        return False
+    if key_rotator:
+        return key_rotator.has_available_keys("groq")
+    groq_key = os.environ.get("GROQ_API_KEY")
+    return bool(groq_key) and groq_key != "gsk-placeholder"
 
 app = FastAPI()
 
@@ -59,16 +122,20 @@ async def health_check():
 
 @app.get("/ready")
 async def readiness_check():
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    groq_key = os.environ.get("GROQ_API_KEY")
+    openai_configured = openai_embeddings_enabled()
+    groq_configured = groq_llm_enabled()
+    groq_count = len(key_rotator.get_all_keys("groq")) if key_rotator else (1 if groq_configured else 0)
+    openai_count = len(key_rotator.get_all_keys("openai")) if key_rotator else (1 if openai_configured else 0)
     return {
         "status": "ready",
         "dependencies": {
             "vectors_available": VECTORS_AVAILABLE,
             "llm_available": LLM_AVAILABLE,
-            "openai_key_configured": bool(openai_key) and openai_key != "sk-placeholder",
-            "groq_key_configured": bool(groq_key) and groq_key != "gsk-placeholder",
-            "groq_enabled": groq_llm_enabled(),
+            "openai_key_configured": openai_configured,
+            "groq_key_configured": groq_configured,
+            "groq_keys_count": groq_count,
+            "openai_keys_count": openai_count,
+            "groq_enabled": groq_configured,
             "groq_model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
         },
     }
@@ -157,39 +224,6 @@ class AssignmentEvalResponse(BaseModel):
     improvement_suggestions: List[str]
     summary: str
     detailed_feedback: str
-
-# Robust Import Block
-VECTORS_AVAILABLE = False
-LLM_AVAILABLE = False
-
-try:
-    from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain_openai import OpenAIEmbeddings
-    from langchain_huggingface import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import FAISS
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain.chains.combine_documents import create_stuff_documents_chain
-    from langchain.chains import create_retrieval_chain
-    from langchain_core.messages import HumanMessage, AIMessage
-    from langchain_core.output_parsers import JsonOutputParser
-    VECTORS_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Vector / embedding integration unavailable ({e}). Fallback Mock AI active.")
-
-try:
-    from langchain_groq import ChatGroq
-    LLM_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Groq LLM integration unavailable ({e}). Mock AI will be used.")
-
-IMAGE_TO_TEXT_AVAILABLE = False
-try:
-    from PIL import Image
-    import pytesseract
-    IMAGE_TO_TEXT_AVAILABLE = True
-except ImportError:
-    pass
 
 def get_vector_store():
     if not VECTORS_AVAILABLE: return None
@@ -350,18 +384,6 @@ def normalize_course_key(course_key: str) -> str:
     s = re.sub(r"[^a-z0-9\\-_]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-")
     return s or "default"
-
-def openai_embeddings_enabled() -> bool:
-    if not VECTORS_AVAILABLE:
-        return False
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    return bool(openai_key) and openai_key != "sk-placeholder"
-
-def groq_llm_enabled() -> bool:
-    if not LLM_AVAILABLE:
-        return False
-    groq_key = os.environ.get("GROQ_API_KEY")
-    return bool(groq_key) and groq_key != "gsk-placeholder"
 
 def course_style_path(course_key: str) -> str:
     return os.path.join(COURSE_STYLE_ROOT, f"{course_key}.json")

@@ -8,8 +8,21 @@ import zipfile
 from datetime import datetime
 
 import httpx
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
+
+logger = logging.getLogger(__name__)
+
+try:
+    from key_rotator import key_rotator, mask_key
+except ImportError:
+    import sys
+    from pathlib import Path
+    _ai_root = str(Path(__file__).resolve().parents[2])
+    if _ai_root not in sys.path:
+        sys.path.insert(0, _ai_root)
+    from key_rotator import key_rotator, mask_key
 
 try:
     from dotenv import load_dotenv
@@ -41,10 +54,15 @@ except ImportError:
     _GUARDRAILS_AVAILABLE = False
     print('[assignment_eval] WARNING: eval_validation package not found; guardrails disabled.')
 
-DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b'
+DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b'
+GROQ_FALLBACK_MODELS = [
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.8-27b',
+    'openai/gpt-oss-20b',
+]
 RETIRED_GROQ_MODELS = {'llama-3.1-8b-instant'}
 DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434'
-DEFAULT_OLLAMA_MODEL = 'qwen3:4b'
+DEFAULT_OLLAMA_MODEL = 'gemma4:e4b'
 PROMPT_CHAR_BUDGET = 15000
 COMPACT_PROMPT_CHAR_BUDGET = 10000
 MINIMAL_PROMPT_CHAR_BUDGET = 7000
@@ -342,7 +360,11 @@ def parse_rubric(rubric_text: str):
             continue
         name = re.sub(r'^(?:criteria|criterion)\s*:?\s*', '', match.group(1), flags=re.IGNORECASE).strip()
         description = line[match.end():].strip(' -:\u2013\u2014')
-        if name and not name.lower().startswith(('total score', 'total marks')):
+        if (
+            name
+            and name.lower().strip() not in {'total', 'total score', 'total marks', 'overall', 'overall score', 'total points'}
+            and not name.lower().strip().startswith(('total score', 'total marks', 'total points', 'total:'))
+        ):
             criteria.append({'name': name, 'maxScore': float(match.group(2)), 'description': description})
 
     if not criteria:
@@ -441,8 +463,11 @@ def _student_label(relative_path: str) -> str:
 
 
 def _groq_enabled():
-    key = os.environ.get('GROQ_API_KEY', '').strip()
-    return bool(key) and key != 'gsk-placeholder'
+    return key_rotator.has_available_keys('groq')
+
+
+def _openai_enabled():
+    return key_rotator.has_available_keys('openai')
 
 
 def _ollama_enabled():
@@ -464,17 +489,15 @@ def _exception_status(exc):
 
 
 def _is_groq_quota_exhausted(exc):
-    if _exception_status(exc) != 429:
-        return False
-    message = str(exc).lower()
-    return any(token in message for token in (
-        'daily', 'quota', 'token limit', 'tokens limit', 'limit exceeded',
-        'exceeded your limit',
-    ))
+    return key_rotator.is_groq_quota_or_rate_limit(exc)
+
+
+def _is_openai_quota_exhausted(exc):
+    return key_rotator.is_openai_quota_or_rate_limit(exc)
 
 
 def _is_authentication_error(exc):
-    return _exception_status(exc) in {401, 403}
+    return key_rotator.is_auth_error(exc)
 
 
 def _is_transient_llm_error(exc):
@@ -490,12 +513,48 @@ def _ollama_url(path: str = '/api/chat'):
     return f"{os.environ.get('OLLAMA_BASE_URL', DEFAULT_OLLAMA_BASE_URL).rstrip('/')}{path}"
 
 
+_DETECTED_OLLAMA_MODEL: Optional[str] = None
+
+
+async def _resolve_ollama_model() -> str:
+    """
+    Resolve the Ollama model:
+    1. Explicit OLLAMA_MODEL environment variable if configured.
+    2. Cached detected model if already discovered.
+    3. Query http://localhost:11434/api/tags to detect installed models (e.g. gemma4:e4b).
+    4. Fall back to DEFAULT_OLLAMA_MODEL.
+    """
+    global _DETECTED_OLLAMA_MODEL
+    configured = os.environ.get('OLLAMA_MODEL', '').strip()
+    if configured:
+        return configured
+    if _DETECTED_OLLAMA_MODEL:
+        return _DETECTED_OLLAMA_MODEL
+
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(_ollama_url('/api/tags'))
+            if resp.status_code == 200:
+                tags = resp.json().get('models', [])
+                if tags and isinstance(tags, list):
+                    first_name = tags[0].get('name') or tags[0].get('model')
+                    if first_name:
+                        _DETECTED_OLLAMA_MODEL = first_name
+                        logger.info(f"[orchestrator] Auto-detected installed Ollama model: {_DETECTED_OLLAMA_MODEL}")
+                        return _DETECTED_OLLAMA_MODEL
+    except Exception as exc:
+        logger.debug(f"[orchestrator] Ollama /api/tags auto-detection failed: {exc}")
+
+    return DEFAULT_OLLAMA_MODEL
+
+
 async def _invoke_ollama(messages):
+    model = await _resolve_ollama_model()
     request = {
-        'model': os.environ.get('OLLAMA_MODEL', DEFAULT_OLLAMA_MODEL),
+        'model': model,
         'messages': [
             {
-                'role': {'human': 'user', 'ai': 'assistant'}.get(
+                'role': {'human': 'user', 'ai': 'assistant', 'system': 'system'}.get(
                     getattr(message, 'type', 'user'), getattr(message, 'type', 'user')
                 ),
                 'content': str(getattr(message, 'content', message)),
@@ -503,15 +562,53 @@ async def _invoke_ollama(messages):
             for message in messages
         ],
         'stream': False,
-        # Qwen3 can emit a reasoning trace before the requested JSON. Disable
-        # it so the rubric parser receives only the structured answer.
-        'think': False,
         'format': 'json',
         'options': {'temperature': 0, 'num_predict': max(MAX_COMPLETION_TOKENS, 1600)},
     }
+    # Qwen3 models emit reasoning tokens unless think=False is set
+    if 'qwen' in model.lower():
+        request['think'] = False
+
     async with httpx.AsyncClient(timeout=90.0) as client:
-        response = await client.post(_ollama_url(), json=request)
-        response.raise_for_status()
+        try:
+            response = await client.post(_ollama_url(), json=request)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # Model wasn't found in Ollama (e.g. qwen3:4b requested on a machine that has gemma4:e4b).
+                # Query /api/tags to detect installed models and retry with an installed model.
+                try:
+                    tags_resp = await client.get(_ollama_url('/api/tags'))
+                    if tags_resp.status_code == 200:
+                        models = tags_resp.json().get('models', [])
+                        installed = [m.get('name') for m in models if m.get('name')]
+                        if installed and installed[0] != model:
+                            fallback_model = installed[0]
+                            logger.warning(
+                                f"[orchestrator] Ollama model '{model}' not found (404). "
+                                f"Retrying evaluation with installed model '{fallback_model}'..."
+                            )
+                            request['model'] = fallback_model
+                            if 'qwen' in fallback_model.lower():
+                                request['think'] = False
+                            elif 'think' in request:
+                                del request['think']
+                            retry_resp = await client.post(_ollama_url(), json=request)
+                            retry_resp.raise_for_status()
+                            response = retry_resp
+                        else:
+                            raise RuntimeError(
+                                f"Ollama model '{model}' is not installed (404). "
+                                f"Installed models: {installed}. Please run 'ollama pull {model}' or configure OLLAMA_MODEL."
+                            ) from exc
+                except Exception as tag_err:
+                    if isinstance(tag_err, RuntimeError):
+                        raise
+                    raise RuntimeError(
+                        f"Ollama model '{model}' not found (404) and no installed model could be loaded: {tag_err}"
+                    ) from exc
+            else:
+                raise
         body = response.json()
     content = body.get('message', {}).get('content') if isinstance(body, dict) else None
     if not isinstance(content, str) or not content.strip():
@@ -528,18 +625,117 @@ def _is_json_format_error(exc):
 
 
 async def _invoke_groq(messages):
-    model_name = _groq_model()
-    kwargs = {
-        'model_name': model_name,
-        'temperature': 0.0,
-        'max_tokens': max(MAX_COMPLETION_TOKENS, 4096),
-        'model_kwargs': {'response_format': {'type': 'json_object'}},
-    }
-    if 'gpt-oss' in model_name:
-        kwargs['reasoning_effort'] = 'low'
-    llm = ChatGroq(**kwargs)
-    response = await asyncio.to_thread(llm.invoke, messages)
-    return getattr(response, 'content', response)
+    configured_model = _groq_model()
+    # List of models to try if daily token quota / rate limit on one model is reached
+    candidate_models = [configured_model]
+    for m in GROQ_FALLBACK_MODELS:
+        if m not in candidate_models:
+            candidate_models.append(m)
+
+    total_keys = len(key_rotator.get_all_keys('groq')) or 1
+    last_exc = None
+
+    for model_name in candidate_models:
+        base_kwargs = {
+            'model_name': model_name,
+            'temperature': 0.0,
+            'max_tokens': max(MAX_COMPLETION_TOKENS, 4096),
+            'model_kwargs': {'response_format': {'type': 'json_object'}},
+        }
+        if 'gpt-oss' in model_name:
+            base_kwargs['reasoning_effort'] = 'low'
+
+        for _ in range(total_keys):
+            active_key = key_rotator.get_active_key('groq')
+            kwargs = dict(base_kwargs)
+            if active_key:
+                kwargs['groq_api_key'] = active_key
+            try:
+                llm = ChatGroq(**kwargs)
+                response = await asyncio.to_thread(llm.invoke, messages)
+                if active_key:
+                    key_rotator.mark_success('groq', active_key)
+                return getattr(response, 'content', response)
+            except Exception as exc:
+                last_exc = exc
+                if key_rotator.is_groq_quota_or_rate_limit(exc) or key_rotator.is_auth_error(exc):
+                    next_key = key_rotator.rotate_key('groq', reason=str(exc))
+                    if next_key:
+                        logger.warning(
+                            f"[orchestrator] Groq API key hit rate limit/quota ({mask_key(active_key)}). "
+                            f"Cascaded to {mask_key(next_key)}. Retrying evaluation immediately..."
+                        )
+                        continue
+                    else:
+                        # All keys for this model are exhausted.
+                        # Since Groq tracks token quotas per model, cascade to the next candidate model!
+                        logger.warning(
+                            f"[orchestrator] Groq model '{model_name}' hit rate limit/daily quota across all keys. "
+                            f"Cascading to next Groq candidate model..."
+                        )
+                        break
+                raise
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("No available Groq API keys or models.")
+
+
+async def _invoke_openai(messages):
+    openai_model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+    base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
+    total_keys = len(key_rotator.get_all_keys('openai')) or 1
+    last_exc = None
+
+    formatted_messages = [
+        {
+            'role': {'human': 'user', 'ai': 'assistant', 'system': 'system'}.get(
+                getattr(m, 'type', 'user'), getattr(m, 'type', 'user')
+            ),
+            'content': str(getattr(m, 'content', m)),
+        }
+        for m in messages
+    ]
+
+    for _ in range(total_keys):
+        active_key = key_rotator.get_active_key('openai')
+        if not active_key:
+            break
+        headers = {
+            'Authorization': f'Bearer {active_key}',
+            'Content-Type': 'application/json',
+        }
+        body = {
+            'model': openai_model,
+            'messages': formatted_messages,
+            'temperature': 0.0,
+            'response_format': {'type': 'json_object'},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                response = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
+                response.raise_for_status()
+                data = response.json()
+            content = data.get('choices', [{}])[0].get('message', {}).get('content')
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError('OpenAI response did not contain message content')
+            key_rotator.mark_success('openai', active_key)
+            return content
+        except Exception as exc:
+            last_exc = exc
+            if key_rotator.is_openai_quota_or_rate_limit(exc) or key_rotator.is_auth_error(exc):
+                next_key = key_rotator.rotate_key('openai', reason=str(exc))
+                if next_key:
+                    logger.warning(
+                        f"[orchestrator] OpenAI API key hit rate limit/quota ({mask_key(active_key)}). "
+                        f"Cascaded to {mask_key(next_key)}. Retrying evaluation immediately..."
+                    )
+                    continue
+            raise
+
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("No available OpenAI API keys.")
 
 
 async def _invoke_and_validate(provider, prompt, values, criteria, rubric_package, student_name, file_name, text):
@@ -560,11 +756,12 @@ async def _invoke_and_validate(provider, prompt, values, criteria, rubric_packag
                     'Return one complete, valid JSON object matching the requested schema.'
                 )
             messages = prompt.format_messages(**attempt_values)
-            raw = (
-                await _invoke_groq(messages)
-                if provider == 'groq'
-                else await _invoke_ollama(messages)
-            )
+            if provider == 'groq':
+                raw = await _invoke_groq(messages)
+            elif provider == 'openai':
+                raw = await _invoke_openai(messages)
+            else:
+                raw = await _invoke_ollama(messages)
             parsed_payload = _parse_json_object(raw)
             try:
                 return _validate_llm_payload(parsed_payload, criteria)
@@ -577,6 +774,8 @@ async def _invoke_and_validate(provider, prompt, values, criteria, rubric_packag
         except Exception as exc:
             last_error = exc
             if provider == 'groq' and (_is_groq_quota_exhausted(exc) or _is_authentication_error(exc)):
+                raise
+            if provider == 'openai' and (_is_openai_quota_exhausted(exc) or _is_authentication_error(exc)):
                 raise
             if attempt == 1:
                 raise
@@ -606,10 +805,12 @@ async def evaluate_single_submission_with_llm(
     providers = []
     if _groq_enabled():
         providers.append('groq')
+    if _openai_enabled():
+        providers.append('openai')
     if _ollama_enabled():
         providers.append('ollama')
     if not providers:
-        raise RuntimeError('LLM evaluation is unavailable; configure Groq or enable Ollama')
+        raise RuntimeError('LLM evaluation is unavailable; configure Groq, OpenAI, or enable Ollama')
 
     # ── Guardrail: input validation ─────────────────────────────────────────
     injection_detected = False
@@ -730,7 +931,11 @@ Return a valid JSON object adhering strictly to this schema:
                 _is_groq_quota_exhausted(exc) or _is_authentication_error(exc)
             ):
                 continue
-            if provider == 'groq' and is_request_too_large_error(exc) and 'ollama' in providers:
+            if provider == 'groq' and is_request_too_large_error(exc) and ('openai' in providers or 'ollama' in providers):
+                continue
+            if provider == 'openai' and (
+                _is_openai_quota_exhausted(exc) or _is_authentication_error(exc)
+            ):
                 continue
             raise
     if payload is None:

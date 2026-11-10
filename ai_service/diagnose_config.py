@@ -9,6 +9,15 @@ import json
 import os
 from pathlib import Path
 
+try:
+    from key_rotator import parse_key_list
+except ImportError:
+    import sys
+    _ai_root = str(Path(__file__).resolve().parent)
+    if _ai_root not in sys.path:
+        sys.path.insert(0, _ai_root)
+    from key_rotator import parse_key_list
+
 
 def _configured(value: str | None, placeholder: str) -> bool:
     return bool(value and value.strip() and value.strip() != placeholder)
@@ -16,21 +25,30 @@ def _configured(value: str | None, placeholder: str) -> bool:
 
 def build_diagnostics(environment=None):
     environment = environment or os.environ
+    raw_groq = environment.get("GROQ_API_KEYS") or environment.get("GROQ_API_KEY") or ""
+    groq_keys = parse_key_list(raw_groq)
+    raw_openai = environment.get("OPENAI_API_KEYS") or environment.get("OPENAI_API_KEY") or ""
+    openai_keys = parse_key_list(raw_openai)
+
     groq_key = environment.get("GROQ_API_KEY")
     openai_key = environment.get("OPENAI_API_KEY")
     model = (environment.get("GROQ_MODEL") or "openai/gpt-oss-20b").strip()
     return {
         "service": "ai-service",
         "groq": {
-            "key_configured": _configured(groq_key, "gsk-placeholder"),
+            "key_configured": len(groq_keys) > 0 if raw_groq else _configured(groq_key, "gsk-placeholder"),
+            "key_count": len(groq_keys),
+            "multi_key_enabled": len(groq_keys) > 1,
             "model": model,
             "structured_json_requested": True,
         },
         "openai": {
-            "key_configured": _configured(openai_key, "sk-placeholder"),
+            "key_configured": len(openai_keys) > 0 if raw_openai else _configured(openai_key, "sk-placeholder"),
+            "key_count": len(openai_keys),
+            "multi_key_enabled": len(openai_keys) > 1,
         },
         "required_variables": {
-            "GROQ_API_KEY": bool(groq_key),
+            "GROQ_API_KEY": bool(groq_key or groq_keys),
             "GROQ_MODEL": bool(model),
         },
         "notes": [
