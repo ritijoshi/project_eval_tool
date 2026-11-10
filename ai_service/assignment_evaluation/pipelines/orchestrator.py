@@ -55,11 +55,11 @@ except ImportError:
     _GUARDRAILS_AVAILABLE = False
     print('[assignment_eval] WARNING: eval_validation package not found; guardrails disabled.')
 
-DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b'
+DEFAULT_GROQ_MODEL = 'openai/gpt-oss-20b'
 GROQ_FALLBACK_MODELS = [
-    'openai/gpt-oss-120b',
-    'qwen/qwen3.8-27b',
     'openai/gpt-oss-20b',
+    'qwen/qwen3.8-27b',
+    'openai/gpt-oss-120b',
 ]
 RETIRED_GROQ_MODELS = {'llama-3.1-8b-instant'}
 DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434'
@@ -737,6 +737,7 @@ async def _invoke_groq(messages):
                 f"[orchestrator] All API keys exhausted for model '{model_name}'. "
                 f"Cascading to next model '{next_model}' (will retry all {len(ordered_keys)} key(s))."
             )
+            await asyncio.sleep(2.0)
 
     # Step 4: Complete Failure
     if last_exc:
@@ -1290,6 +1291,9 @@ async def run_assignment_eval_pipeline(session_id: str, rubric_path: str, zip_pa
                 'progressPercent': min(99, int((index / total_students) * 100)) if total_students else 0,
                 'latestResult': results[-1],
             })
+            # Small pacing pause between submissions to prevent bursting TPM on Groq
+            if index < len(student_groups):
+                await asyncio.sleep(1.0)
 
         completed_count = sum(1 for result in results if result.get('success') is not False)
         failed_count = len(results) - completed_count

@@ -345,7 +345,7 @@ def register_all_tools(registry: ToolRegistry = default_tool_registry) -> None:
         description="Calls standard LLM evaluator with safety delimiters and trusted criteria.",
         allowed_workflows=all_workflows,
         handler=tool_evaluate_against_rubric,
-        timeout_seconds=90.0,
+        timeout_seconds=float(os.getenv("EVAL_TOOL_TIMEOUT_SECONDS", "240.0")),
     ))
 
     registry.register(ToolDefinition(

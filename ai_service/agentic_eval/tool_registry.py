@@ -178,8 +178,10 @@ class ToolRegistry:
         except Exception as exc:
             duration_ms = (time.monotonic() - start_time) * 1000
             err_msg = str(exc).strip()
-            if not err_msg:
-                err_msg = f"{type(exc).__name__}: Request timed out or terminated without an error description"
+            if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                err_msg = f"TimeoutError: Tool execution exceeded {tool.timeout_seconds:.0f}s limit (LLM evaluation took too long)"
+            elif not err_msg:
+                err_msg = f"{type(exc).__name__}: Request failed without an error description"
 
             record = ToolCallRecord(
                 tool_call_id=call_id,
