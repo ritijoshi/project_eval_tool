@@ -6,6 +6,7 @@ import re
 import shutil
 import zipfile
 from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 import httpx
 import logging
@@ -626,16 +627,33 @@ def _is_json_format_error(exc):
 
 async def _invoke_groq(messages):
     configured_model = _groq_model()
-    # List of models to try if daily token quota / rate limit on one model is reached
+    # Candidate models ordered: primary configured model first, followed by fallbacks
     candidate_models = [configured_model]
     for m in GROQ_FALLBACK_MODELS:
         if m not in candidate_models:
             candidate_models.append(m)
 
-    total_keys = len(key_rotator.get_all_keys('groq')) or 1
+    keys = key_rotator.get_all_keys('groq')
+    if not keys:
+        single_key = os.environ.get('GROQ_API_KEY', '').strip()
+        if single_key and single_key not in {'gsk-placeholder', 'none', 'null'}:
+            keys = [single_key]
+
+    if not keys:
+        raise RuntimeError("No available Groq API keys configured.")
+
+    # Order keys starting from the current active key to respect cooldowns across calls
+    active_key = key_rotator.get_active_key('groq')
+    if active_key and active_key in keys:
+        start_idx = keys.index(active_key)
+        ordered_keys = keys[start_idx:] + keys[:start_idx]
+    else:
+        ordered_keys = list(keys)
+
     last_exc = None
 
-    for model_name in candidate_models:
+    # Step 1 & 3: Model Cascading (Model A -> Model B -> Model C)
+    for model_idx, model_name in enumerate(candidate_models, 1):
         base_kwargs = {
             'model_name': model_name,
             'temperature': 0.0,
@@ -645,48 +663,108 @@ async def _invoke_groq(messages):
         if 'gpt-oss' in model_name:
             base_kwargs['reasoning_effort'] = 'low'
 
-        for _ in range(total_keys):
-            active_key = key_rotator.get_active_key('groq')
+        # Step 1 & 2: API Key Cascading for the CURRENT model (Key 1 -> Key 2 -> Key 3)
+        # All keys for the current model must be exhausted due to rate limits before switching to another model.
+        for slot, key in enumerate(ordered_keys, 1):
+            masked = mask_key(key)
+            logger.info(
+                f"[orchestrator] Attempting Model {model_idx}/{len(candidate_models)} ('{model_name}') "
+                f"with API Key slot {slot}/{len(ordered_keys)} ({masked})"
+            )
+
             kwargs = dict(base_kwargs)
-            if active_key:
-                kwargs['groq_api_key'] = active_key
+            if key:
+                kwargs['groq_api_key'] = key
+
             try:
                 llm = ChatGroq(**kwargs)
                 response = await asyncio.to_thread(llm.invoke, messages)
-                if active_key:
-                    key_rotator.mark_success('groq', active_key)
+                if key:
+                    key_rotator.mark_success('groq', key)
                 return getattr(response, 'content', response)
             except Exception as exc:
                 last_exc = exc
-                if key_rotator.is_groq_quota_or_rate_limit(exc) or key_rotator.is_auth_error(exc):
-                    next_key = key_rotator.rotate_key('groq', reason=str(exc))
-                    if next_key:
-                        logger.warning(
-                            f"[orchestrator] Groq API key hit rate limit/quota ({mask_key(active_key)}). "
-                            f"Cascaded to {mask_key(next_key)}. Retrying evaluation immediately..."
+
+                # Handle rate limits (HTTP 429 / TPM / TPD / daily token limits)
+                if key_rotator.is_groq_quota_or_rate_limit(exc):
+                    key_rotator.rotate_key('groq', reason=str(exc))
+                    logger.warning(
+                        f"[orchestrator] Model '{model_name}' hit rate limit on API Key slot {slot}/{len(ordered_keys)} ({masked}). "
+                        f"Reason: {exc}"
+                    )
+                    # If untried keys remain for THIS model, cascade to the next key on the SAME model
+                    if slot < len(ordered_keys):
+                        logger.info(
+                            f"[orchestrator] Cascading to next API key slot ({slot + 1}/{len(ordered_keys)}) "
+                            f"for the SAME model '{model_name}'..."
                         )
                         continue
                     else:
-                        # All keys for this model are exhausted.
-                        # Since Groq tracks token quotas per model, cascade to the next candidate model!
+                        # All keys exhausted for this model due to rate limits
                         logger.warning(
-                            f"[orchestrator] Groq model '{model_name}' hit rate limit/daily quota across all keys. "
-                            f"Cascading to next Groq candidate model..."
+                            f"[orchestrator] All {len(ordered_keys)} API key(s) exhausted due to rate limits "
+                            f"for model '{model_name}'."
                         )
                         break
-                raise
 
+                # If auth failure on this specific key and another key exists, try the next key
+                elif key_rotator.is_auth_error(exc) and slot < len(ordered_keys):
+                    key_rotator.rotate_key('groq', reason=str(exc))
+                    logger.warning(
+                        f"[orchestrator] Model '{model_name}' auth error on API Key slot {slot}/{len(ordered_keys)} ({masked}). "
+                        f"Trying next key slot..."
+                    )
+                    continue
+
+                # Non-rate-limit errors: preserve error handling immediately
+                else:
+                    logger.error(
+                        f"[orchestrator] Non-rate-limit error on model '{model_name}' "
+                        f"(Key slot {slot}/{len(ordered_keys)}): {type(exc).__name__}: {exc}"
+                    )
+                    raise exc
+
+        # All keys for model_name hit rate limits. If more models remain, cascade to the next model!
+        if model_idx < len(candidate_models):
+            next_model = candidate_models[model_idx]
+            logger.warning(
+                f"[orchestrator] All API keys exhausted for model '{model_name}'. "
+                f"Cascading to next model '{next_model}' (will retry all {len(ordered_keys)} key(s))."
+            )
+
+    # Step 4: Complete Failure
     if last_exc:
-        raise last_exc
+        raise RuntimeError(
+            f"All configured Groq models ({', '.join(candidate_models)}) and their API keys "
+            f"({len(ordered_keys)} key(s)) have been exhausted due to rate limits. Last error: {last_exc}"
+        ) from last_exc
     raise RuntimeError("No available Groq API keys or models.")
 
 
 async def _invoke_openai(messages):
-    openai_model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
-    base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
-    total_keys = len(key_rotator.get_all_keys('openai')) or 1
-    last_exc = None
+    configured_model = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
+    candidate_models = [configured_model]
+    for m in ['gpt-4o-mini', 'gpt-4o']:
+        if m not in candidate_models:
+            candidate_models.append(m)
 
+    keys = key_rotator.get_all_keys('openai')
+    if not keys:
+        single_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        if single_key and single_key not in {'sk-placeholder', 'none', 'null'}:
+            keys = [single_key]
+
+    if not keys:
+        raise RuntimeError("No available OpenAI API keys configured.")
+
+    active_key = key_rotator.get_active_key('openai')
+    if active_key and active_key in keys:
+        start_idx = keys.index(active_key)
+        ordered_keys = keys[start_idx:] + keys[:start_idx]
+    else:
+        ordered_keys = list(keys)
+
+    base_url = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
     formatted_messages = [
         {
             'role': {'human': 'user', 'ai': 'assistant', 'system': 'system'}.get(
@@ -697,44 +775,86 @@ async def _invoke_openai(messages):
         for m in messages
     ]
 
-    for _ in range(total_keys):
-        active_key = key_rotator.get_active_key('openai')
-        if not active_key:
-            break
-        headers = {
-            'Authorization': f'Bearer {active_key}',
-            'Content-Type': 'application/json',
-        }
-        body = {
-            'model': openai_model,
-            'messages': formatted_messages,
-            'temperature': 0.0,
-            'response_format': {'type': 'json_object'},
-        }
-        try:
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                response = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
-                response.raise_for_status()
-                data = response.json()
-            content = data.get('choices', [{}])[0].get('message', {}).get('content')
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError('OpenAI response did not contain message content')
-            key_rotator.mark_success('openai', active_key)
-            return content
-        except Exception as exc:
-            last_exc = exc
-            if key_rotator.is_openai_quota_or_rate_limit(exc) or key_rotator.is_auth_error(exc):
-                next_key = key_rotator.rotate_key('openai', reason=str(exc))
-                if next_key:
+    last_exc = None
+
+    # Step 1 & 3: Model Cascading
+    for model_idx, model_name in enumerate(candidate_models, 1):
+        # Step 1 & 2: API Key Cascading for current model
+        for slot, key in enumerate(ordered_keys, 1):
+            masked = mask_key(key)
+            logger.info(
+                f"[orchestrator] Attempting OpenAI Model {model_idx}/{len(candidate_models)} ('{model_name}') "
+                f"with API Key slot {slot}/{len(ordered_keys)} ({masked})"
+            )
+
+            headers = {
+                'Authorization': f'Bearer {key}',
+                'Content-Type': 'application/json',
+            }
+            body = {
+                'model': model_name,
+                'messages': formatted_messages,
+                'temperature': 0.0,
+                'response_format': {'type': 'json_object'},
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    response = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
+                    response.raise_for_status()
+                    data = response.json()
+                content = data.get('choices', [{}])[0].get('message', {}).get('content')
+                if not isinstance(content, str) or not content.strip():
+                    raise ValueError('OpenAI response did not contain message content')
+                if key:
+                    key_rotator.mark_success('openai', key)
+                return content
+            except Exception as exc:
+                last_exc = exc
+                if key_rotator.is_openai_quota_or_rate_limit(exc):
+                    key_rotator.rotate_key('openai', reason=str(exc))
                     logger.warning(
-                        f"[orchestrator] OpenAI API key hit rate limit/quota ({mask_key(active_key)}). "
-                        f"Cascaded to {mask_key(next_key)}. Retrying evaluation immediately..."
+                        f"[orchestrator] OpenAI Model '{model_name}' hit rate limit on Key slot {slot}/{len(ordered_keys)} ({masked}). "
+                        f"Reason: {exc}"
+                    )
+                    if slot < len(ordered_keys):
+                        logger.info(
+                            f"[orchestrator] Cascading to next OpenAI API key slot ({slot + 1}/{len(ordered_keys)}) "
+                            f"for the SAME model '{model_name}'..."
+                        )
+                        continue
+                    else:
+                        logger.warning(
+                            f"[orchestrator] All {len(ordered_keys)} OpenAI API key(s) exhausted due to rate limits "
+                            f"for model '{model_name}'."
+                        )
+                        break
+                elif key_rotator.is_auth_error(exc) and slot < len(ordered_keys):
+                    key_rotator.rotate_key('openai', reason=str(exc))
+                    logger.warning(
+                        f"[orchestrator] OpenAI Model '{model_name}' auth error on Key slot {slot}/{len(ordered_keys)} ({masked}). "
+                        f"Trying next key slot..."
                     )
                     continue
-            raise
+                else:
+                    logger.error(
+                        f"[orchestrator] Non-rate-limit error on OpenAI model '{model_name}' "
+                        f"(Key slot {slot}/{len(ordered_keys)}): {type(exc).__name__}: {exc}"
+                    )
+                    raise exc
+
+        if model_idx < len(candidate_models):
+            next_model = candidate_models[model_idx]
+            logger.warning(
+                f"[orchestrator] All OpenAI API keys exhausted for model '{model_name}'. "
+                f"Cascading to next model '{next_model}' (will retry all {len(ordered_keys)} key(s))."
+            )
 
     if last_exc:
-        raise last_exc
+        raise RuntimeError(
+            f"All configured OpenAI models ({', '.join(candidate_models)}) and their API keys "
+            f"({len(ordered_keys)} key(s)) have been exhausted due to rate limits. Last error: {last_exc}"
+        ) from last_exc
     raise RuntimeError("No available OpenAI API keys.")
 
 

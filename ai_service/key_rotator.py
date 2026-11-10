@@ -109,10 +109,13 @@ class KeyRotator:
             self._keys["groq"] = groq_keys
             self._keys["openai"] = openai_keys
 
-            # Reset indices if out of range
-            for provider in ("groq", "openai"):
-                if self._active_indices[provider] >= len(self._keys[provider]):
-                    self._active_indices[provider] = 0
+            # Reset active indices and cooldowns on reload
+            self._active_indices["groq"] = 0
+            self._active_indices["openai"] = 0
+            self._exhausted_until["groq"] = {}
+            self._exhausted_until["openai"] = {}
+            self._failure_counts["groq"] = {}
+            self._failure_counts["openai"] = {}
 
             # Keep os.environ pointing to a single clean active key rather than a comma-separated list
             active_groq = self._get_active_key_unlocked("groq")
@@ -131,6 +134,15 @@ class KeyRotator:
                 logger.info(
                     f"[KeyRotator] Loaded {len(openai_keys)} OpenAI API key(s). Active: {mask_key(active_openai)}"
                 )
+
+    def reset(self, provider: Optional[str] = None) -> None:
+        """Reset rotation indices and clear all exhaustion cooldowns."""
+        with self._lock:
+            targets = [provider.lower()] if provider else ["groq", "openai"]
+            for p in targets:
+                self._active_indices[p] = 0
+                self._exhausted_until[p] = {}
+                self._failure_counts[p] = {}
 
     def _is_key_exhausted_unlocked(self, provider: str, key: str) -> bool:
         """Check whether a key is currently in cooldown."""
