@@ -41,17 +41,27 @@ LLM_AVAILABLE = False
 try:
     from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain_openai import OpenAIEmbeddings
     from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_community.vectorstores import FAISS
     from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain.chains.combine_documents import create_stuff_documents_chain
-    from langchain.chains import create_retrieval_chain
     from langchain_core.messages import HumanMessage, AIMessage
-    from langchain_core.output_parsers import JsonOutputParser
+    from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+    from langchain_core.runnables import RunnablePassthrough
     VECTORS_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Vector / embedding integration unavailable ({e}). Fallback Mock AI active.")
+
+try:
+    from langchain_openai import OpenAIEmbeddings  # type: ignore
+except ImportError:
+    OpenAIEmbeddings = None  # type: ignore
+
+try:
+    from langchain.chains.combine_documents import create_stuff_documents_chain  # type: ignore
+    from langchain.chains import create_retrieval_chain  # type: ignore
+except ImportError:
+    create_stuff_documents_chain = None  # type: ignore
+    create_retrieval_chain = None  # type: ignore
 
 try:
     from langchain_groq import ChatGroq
@@ -66,6 +76,9 @@ try:
     IMAGE_TO_TEXT_AVAILABLE = True
 except ImportError:
     pass
+
+def huggingface_embeddings_enabled() -> bool:
+    return VECTORS_AVAILABLE
 
 def openai_embeddings_enabled() -> bool:
     if not VECTORS_AVAILABLE:
@@ -561,7 +574,7 @@ def extract_text_from_file(file_location: str, filename: str) -> str:
     if lower.endswith((".mp3", ".wav", ".m4a", ".webm", ".ogg", ".mp4")):
         # Audio transcription is optional; supported when openai-whisper is installed.
         try:
-            import whisper
+            import whisper  # type: ignore
             model_name = os.environ.get("WHISPER_MODEL", "base")
             model = whisper.load_model(model_name)
             result = model.transcribe(file_location)
