@@ -452,7 +452,7 @@ agenticExecution: result.agenticExecution || null,
 
       if (['COMPLETED', 'PARTIAL', 'FAILED'].includes(incomingStatus)) {
         session.processedStudents = await AssignmentStudentResult.countDocuments({ sessionId: session._id });
-        session.progressPercent = incomingStatus === 'COMPLETED' ? 100 : session.progressPercent;
+        session.progressPercent = ['COMPLETED', 'PARTIAL'].includes(incomingStatus) ? 100 : session.progressPercent;
         await session.save();
 
         const finalResults = await AssignmentStudentResult.find({ sessionId }).sort({ evaluatedAt: -1 });

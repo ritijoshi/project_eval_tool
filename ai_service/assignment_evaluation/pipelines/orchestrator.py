@@ -570,10 +570,15 @@ async def _invoke_ollama(messages):
     if 'qwen' in model.lower():
         request['think'] = False
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(_ollama_url(), json=request)
             response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Ollama local model '{model}' timed out after 60s. "
+                "Local inference on CPU is too slow for large notebooks; consider setting OLLAMA_ENABLED=false."
+            ) from exc
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 # Model wasn't found in Ollama (e.g. qwen3:4b requested on a machine that has gemma4:e4b).
@@ -659,6 +664,7 @@ async def _invoke_groq(messages):
             'temperature': 0.0,
             'max_tokens': max(MAX_COMPLETION_TOKENS, 4096),
             'model_kwargs': {'response_format': {'type': 'json_object'}},
+            'request_timeout': 60.0,
         }
         if 'gpt-oss' in model_name:
             base_kwargs['reasoning_effort'] = 'low'

@@ -218,7 +218,11 @@ export default function AgenticTelemetryInspector({ result, onClose, onSaveOverr
           <div style={{ background: 'rgba(30, 41, 59, 0.7)', padding: '0.75rem', borderRadius: 10, border: '1px solid #334155' }}>
             <span style={{ fontSize: '0.72rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>Review Status</span>
             <div style={{ fontSize: '1rem', fontWeight: 600, marginTop: 4 }}>
-              {result.needsReview ? (
+              {result.evaluationStatus === 'FAILED' || result.success === false ? (
+                <span style={{ color: '#f87171', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <AlertTriangle size={16} /> Failed
+                </span>
+              ) : result.needsReview ? (
                 <span style={{ color: '#fb923c', display: 'flex', alignItems: 'center', gap: 4 }}>
                   <AlertTriangle size={16} /> Needs Review
                 </span>
@@ -244,6 +248,26 @@ export default function AgenticTelemetryInspector({ result, onClose, onSaveOverr
             </div>
           </div>
         </div>
+
+        {/* Evaluation Failure Error Banner if any */}
+        {(result.errorMessage || result.evaluationStatus === 'FAILED') && (
+          <div
+            style={{
+              background: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.35)',
+              borderRadius: 10,
+              padding: '0.85rem 1rem',
+              marginBottom: '1.25rem',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#f87171', fontWeight: 600, fontSize: '0.85rem' }}>
+              <AlertTriangle size={16} /> Evaluation Failure Details:
+            </div>
+            <p style={{ margin: '6px 0 0', color: '#fca5a5', fontSize: '0.82rem', fontFamily: 'monospace', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+              {result.errorMessage || 'No detailed error message provided by evaluator.'}
+            </p>
+          </div>
+        )}
 
         {/* Review Flags Alert if any */}
         {result.reviewFlags && result.reviewFlags.length > 0 && (

@@ -177,7 +177,9 @@ class ToolRegistry:
 
         except Exception as exc:
             duration_ms = (time.monotonic() - start_time) * 1000
-            err_msg = str(exc)
+            err_msg = str(exc).strip()
+            if not err_msg:
+                err_msg = f"{type(exc).__name__}: Request timed out or terminated without an error description"
 
             record = ToolCallRecord(
                 tool_call_id=call_id,
